@@ -1,7065 +1,3282 @@
-# ============================================================
-# ЧАСТЬ 1: Импорты, конфигурация, БД, константы, хелперы
-# ============================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Telegram Multi-Tool v2.0
+Файл: tg_tool.py
+Требования: pip install telethon python-socks aiohttp cryptg
+Структура:
+  sessions/  — папка с .session файлами
+  proxies.txt — прокси (socks5://user:pass@ip:port или http://ip:port)
+  config.json — API_ID, API_HASH
+"""
 
-import logging
-import asyncio
-import sqlite3
+# ═══════════════════════════════════════════════════════════════
+# ЧАСТЬ 1 — ЯДРО: импорты, конфиг, утилиты, менеджер, меню
+# ═══════════════════════════════════════════════════════════════
+
+import os
+import sys
 import json
+import glob
 import time
 import random
+import asyncio
 import hashlib
+import re
+import struct
+import logging
 from datetime import datetime, timedelta
-from typing import Optional, List, Tuple, Dict, Any
+from pathlib import Path
+from typing import List, Optional, Tuple, Dict, Any
 
-from aiogram import Bot, Dispatcher, Router, types, F, BaseMiddleware
-from aiogram.types import (
-    Message, CallbackQuery, InlineQuery, InlineQueryResultArticle,
-    InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery,
-    Update
-)
-from aiogram.filters import Command, CommandStart, CommandObject
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.enums import ParseMode
-from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from aiogram.client.default import DefaultBotProperties
+try:
+    from telethon import TelegramClient, events, errors, functions, types
+    from telethon.tl.functions.messages import (
+        GetMessagesViewsRequest, SendReactionRequest, ForwardMessagesRequest,
+        SendVoteRequest, GetBotCallbackAnswerRequest, ReportRequest,
+        DeleteMessagesRequest, EditMessageRequest, SearchRequest,
+        GetHistoryRequest, ReadHistoryRequest, SendMessageRequest,
+        UpdatePinnedMessageRequest, SendMediaRequest,
+        GetScheduledHistoryRequest, SendScheduledMessagesRequest,
+    )
+    from telethon.tl.functions.channels import (
+        JoinChannelRequest, LeaveChannelRequest, InviteToChannelRequest,
+        EditBannedRequest, EditAdminRequest, CreateChannelRequest,
+        EditPhotoRequest, EditTitleRequest, DeleteChannelRequest,
+        GetParticipantsRequest, GetFullChannelRequest,
+    )
+    from telethon.tl.functions.account import (
+        UpdateProfileRequest, UpdateUsernameRequest,
+        GetAuthorizationsRequest, ResetAuthorizationRequest,
+        DeleteAccountRequest, UpdateStatusRequest,
+        GetPasswordRequest,
+    )
+    from telethon.tl.functions.users import GetFullUserRequest
+    from telethon.tl.functions.photos import UploadProfilePhotoRequest, DeletePhotosRequest
+    from telethon.tl.functions.messages import (
+        StartBotRequest, RequestWebViewRequest,
+    )
+    from telethon.tl.types import (
+        ReactionEmoji, ReactionCustomEmoji,
+        ChannelParticipantsSearch, ChannelParticipantsRecent,
+        ChatBannedRights, ChatAdminRights,
+        InputPeerChannel, InputPeerUser, InputChannel,
+        InputReportReasonSpam, InputReportReasonViolence,
+        InputReportReasonPornography, InputReportReasonChildAbuse,
+        InputReportReasonOther, InputReportReasonFake,
+        InputReportReasonGeoIrrelevant, InputReportReasonIllegalDrugs,
+        InputReportReasonPersonalDetails,
+        DocumentAttributeFilename,
+        InputMediaUploadedDocument, InputMediaUploadedPhoto,
+        MessageMediaDocument, MessageMediaPhoto,
+        KeyboardButtonUrl, KeyboardButtonCallback,
+        KeyboardButtonRequestPhone, ReplyInlineMarkup,
+        PeerChannel, PeerUser, PeerChat,
+        UpdateNewChannelMessage, UpdateNewMessage,
+        Channel, Chat, User,
+    )
+    from telethon.errors import (
+        SessionPasswordNeededError, FloodWaitError,
+        UserAlreadyParticipantError, UserNotParticipantError,
+        ChatWriteForbiddenError, ChannelPrivateError,
+        ReactionInvalidError, PeerIdInvalidError,
+        PhoneNumberBannedError, AuthKeyUnregisteredError,
+        UserDeactivatedBanError, UserDeactivatedError,
+    )
+except ImportError:
+    print("❌ Установите зависимости: pip install telethon python-socks aiohttp")
+    sys.exit(1)
 
-# ============================================================
+# ─── Логирование ───
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger("TG-Tool")
+
+# ─── Пути ───
+BASE_DIR = Path(__file__).parent
+SESSIONS_DIR = BASE_DIR / "sessions"
+PROXIES_FILE = BASE_DIR / "proxies.txt"
+CONFIG_FILE = BASE_DIR / "config.json"
+SCENARIOS_DIR = BASE_DIR / "scenarios"
+
+SESSIONS_DIR.mkdir(exist_ok=True)
+SCENARIOS_DIR.mkdir(exist_ok=True)
+
+# ─── Цвета терминала ───
+class C:
+    R = "\033[91m"   # red
+    G = "\033[92m"   # green
+    Y = "\033[93m"   # yellow
+    B = "\033[94m"   # blue
+    M = "\033[95m"   # magenta
+    CY = "\033[96m"  # cyan
+    W = "\033[97m"   # white
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RST = "\033[0m"
+    UNDERLINE = "\033[4m"
+
+def clear():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+def banner():
+    print(f"""{C.CY}{C.BOLD}
+  ╔══════════════════════════════════════════════════╗
+  ║        ⚡ TELEGRAM MULTI-TOOL v2.0 ⚡           ║
+  ║            Telethon + Proxy Engine               ║
+  ╚══════════════════════════════════════════════════╝{C.RST}
+""")
+
+# ═══════════════════════════════════════════════════════════════
 # КОНФИГУРАЦИЯ
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
 
-BOT_TOKEN = "7564393324:AAET_RPPJ3ilt9Nw2QKEjy0AXtZZ8HYQ_HQ"
-ADMIN_IDS = [5200868328]  # Замени на свои ID админов
-DB_PATH = "gift_bot.db"
-PAYMENT_PROVIDER_TOKEN = ""
+def load_config() -> dict:
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
-# Установи True если бот имеет Telegram Premium
-BOT_IS_PREMIUM = True
+def save_config(cfg: dict):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(cfg, f, indent=2)
 
-# ============================================================
-# EMOJI СИСТЕМА
-#
-# Для СООБЩЕНИЙ: <tg-emoji emoji-id="ID">fb</tg-emoji> (только Premium бот)
-# Для КНОПОК (Reply/Inline): используется request_icon_custom_emoji_id
-#
-# Замени все ID на свои реальные custom emoji ID
-# ============================================================
+def get_api_credentials() -> Tuple[int, str]:
+    cfg = load_config()
+    api_id = cfg.get("api_id")
+    api_hash = cfg.get("api_hash")
+    if not api_id or not api_hash:
+        print(f"{C.Y}⚠ Первый запуск — нужны API_ID и API_HASH{C.RST}")
+        print(f"{C.DIM}  Получить: https://my.telegram.org/apps{C.RST}")
+        api_id = int(input(f"{C.CY}  API_ID: {C.RST}").strip())
+        api_hash = input(f"{C.CY}  API_HASH: {C.RST}").strip()
+        cfg["api_id"] = api_id
+        cfg["api_hash"] = api_hash
+        save_config(cfg)
+        print(f"{C.G}✅ Сохранено в config.json{C.RST}")
+    return int(api_id), str(api_hash)
 
-# Конфигурация всех emoji
-# Формат: "ключ": ("custom_emoji_id", "fallback_emoji")
-EMOJI_CONFIG = {
-    # ===== Reply кнопки =====
-    "profile":      ("5316791959052905958", "👤"),
-    "market":       ("5316791959052905958", "🛒"),
-    "market2":      ("5316791959052905958", "💎"),
-    "trade":        ("5316791959052905958", "📊"),
-    "craft":        ("5316791959052905958", "🔨"),
-    "stardom":      ("5316791959052905958", "🌟"),
-    "promo":        ("5316791959052905958", "🎟"),
+# ═══════════════════════════════════════════════════════════════
+# ПРОКСИ
+# ═══════════════════════════════════════════════════════════════
 
-    # ===== Inline кнопки и сообщения =====
-    "buy":          ("5316791959052905958", "🛒"),
-    "topup":        ("5316791959052905958", "💳"),
-    "upgrade":      ("5316791959052905958", "⬆️"),
-    "craft_btn":    ("5316791959052905958", "🔨"),
-    "send":         ("5316791959052905958", "📤"),
-    "star":         ("5316791959052905958", "⭐"),
-    "gift":         ("5316791959052905958", "🎁"),
-    "nft":          ("5316791959052905958", "🖼"),
-    "fire":         ("5316791959052905958", "🔥"),
-    "trophy":       ("5316791959052905958", "🏆"),
-    "friends":      ("5316791959052905958", "👥"),
-    "back":         ("5316791959052905958", "◀️"),
-    "next":         ("5316791959052905958", "▶️"),
-    "check":        ("5316791959052905958", "✅"),
-    "cross":        ("5316791959052905958", "❌"),
-    "rent":         ("5316791959052905958", "🏠"),
-    "auction":      ("5316791959052905958", "🔔"),
-    "limit":        ("5316791959052905958", "⏳"),
-    "appeal":       ("5316791959052905958", "📝"),
-    "inventory":    ("5316791959052905958", "🎒"),
-    "leaderboard":  ("5316791959052905958", "📊"),
-    "achieve":      ("5316791959052905958", "🏅"),
-
-    # ===== Дополнительные =====
-    "warn_emoji":   ("5316791959052905958", "⚠️"),
-    "ban_emoji":    ("5316791959052905958", "🚫"),
-    "rules_emoji":  ("5316791959052905958", "📋"),
-    "moder":        ("5316791959052905958", "👮"),
-    "money":        ("5316791959052905958", "💰"),
-
-    # ===== Stardom Искры =====
-    "spark1":       ("5316791959052905958", "🕯"),
-    "spark2":       ("5316791959052905958", "✨"),
-    "spark3":       ("5316791959052905958", "💫"),
-    "spark4":       ("5316791959052905958", "🌟"),
-    "spark5":       ("5316791959052905958", "💥"),
-
-    # ===== Редкости =====
-    "common":       ("5316791959052905958", "🟢"),
-    "rare":         ("5316791959052905958", "🟣"),
-
-    # ===== NFT характеристики =====
-    "model":        ("5316791959052905958", "🎭"),
-    "pattern":      ("5316791959052905958", "🎨"),
-    "background":   ("5316791959052905958", "🖼"),
-
-    # ===== Торговля =====
-    "price":        ("5316791959052905958", "💰"),
-    "seller":       ("5316791959052905958", "👤"),
-    "buyer":        ("5316791959052905958", "🛍"),
-
-    # ===== Аукцион =====
-    "bid":          ("5316791959052905958", "📈"),
-    "hammer":       ("5316791959052905958", "🔨"),
-    "winner":       ("5316791959052905958", "🏆"),
-
-    # ===== Крафт =====
-    "success":      ("5316791959052905958", "🎉"),
-    "fail":         ("5316791959052905958", "💔"),
-
-    # ===== Аренда =====
-    "clock":        ("5316791959052905958", "⏰"),
-    "house":        ("5316791959052905958", "🏠"),
-
-    # ===== Общие =====
-    "info":         ("5316791959052905958", "ℹ️"),
-    "warning":      ("5316791959052905958", "⚠️"),
-    "error":        ("5316791959052905958", "❌"),
-    "ok":           ("5316791959052905958", "✅"),
-    "id":           ("5316791959052905958", "🆔"),
-    "date":         ("5316791959052905958", "📅"),
-    "pin":          ("5316791959052905958", "📌"),
-    "link":         ("5316791959052905958", "🔗"),
-    "lock":         ("5316791959052905958", "🔒"),
-    "unlock":       ("5316791959052905958", "🔓"),
-    "sparkles":     ("5316791959052905958", "✨"),
-    "gem":          ("5316791959052905958", "💎"),
-    "crown":        ("5316791959052905958", "👑"),
-    "medal":        ("5316791959052905958", "🏅"),
-    "package":      ("5316791959052905958", "📦"),
-}
-
-
-def pe(key: str) -> str:
+def load_proxies() -> List[dict]:
     """
-    Emoji для СООБЩЕНИЙ.
-    BOT_IS_PREMIUM=True  → <tg-emoji emoji-id="ID">fallback</tg-emoji>
-    BOT_IS_PREMIUM=False → обычный emoji
+    Формат proxies.txt (по одному на строку):
+      socks5://user:pass@ip:port
+      socks5://ip:port
+      http://user:pass@ip:port
+      http://ip:port
+      socks4://ip:port
     """
-    data = EMOJI_CONFIG.get(key)
-    if not data:
-        return "❓"
-    eid, fb = data
-    if BOT_IS_PREMIUM and eid:
-        return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
-    return fb
+    proxies = []
+    if not PROXIES_FILE.exists():
+        return proxies
+    with open(PROXIES_FILE, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                p = parse_proxy(line)
+                if p:
+                    proxies.append(p)
+            except Exception:
+                pass
+    return proxies
 
+def parse_proxy(url: str) -> Optional[dict]:
+    """Парсит строку прокси в dict для telethon"""
+    url = url.strip()
+    if "://" not in url:
+        url = "socks5://" + url
 
-def pe_plain(key: str) -> str:
-    """Обычный fallback emoji (текст кнопок)."""
-    data = EMOJI_CONFIG.get(key)
-    if not data:
-        return "❓"
-    return data[1]
+    scheme = url.split("://")[0].lower()
+    rest = url.split("://")[1]
 
+    proxy_type = {
+        "socks5": 2,  # python-socks SOCKS5
+        "socks4": 1,
+        "http": 3,
+        "https": 3,
+    }.get(scheme, 2)
 
-def pe_id(key: str) -> Optional[str]:
-    """
-    Получить custom_emoji_id для кнопок.
-    Возвращает ID если BOT_IS_PREMIUM, иначе None.
-    """
-    if not BOT_IS_PREMIUM:
-        return None
-    data = EMOJI_CONFIG.get(key)
-    if data and data[0]:
-        return data[0]
-    return None
+    username = None
+    password = None
+    if "@" in rest:
+        creds, hostport = rest.rsplit("@", 1)
+        if ":" in creds:
+            username, password = creds.split(":", 1)
+        else:
+            username = creds
+    else:
+        hostport = rest
 
+    if ":" in hostport:
+        host, port = hostport.rsplit(":", 1)
+        port = int(port)
+    else:
+        host = hostport
+        port = 1080
 
-# ============================================================
-# ФУНКЦИИ СОЗДАНИЯ КНОПОК С CUSTOM EMOJI
-# ============================================================
+    return {
+        "proxy_type": scheme,
+        "addr": host,
+        "port": port,
+        "username": username,
+        "password": password,
+        "rdns": True,
+    }
 
-
-def make_inline_button(text: str, callback_data: str, emoji_key: str = None) -> InlineKeyboardButton:
-    """
-    Создаёт InlineKeyboardButton с custom emoji иконкой если бот Premium.
-    Telegram Bot API поддерживает custom emoji в тексте кнопки
-    только если бот имеет Premium.
-    """
-    icon_text = ""
-    if emoji_key:
-        icon_text = f"{pe_plain(emoji_key)} "
-
-    return InlineKeyboardButton(
-        text=f"{icon_text}{text}",
-        callback_data=callback_data
+def proxy_to_telethon(p: dict) -> tuple:
+    """Конвертирует proxy dict в формат для TelegramClient"""
+    import socks
+    ptype_map = {
+        "socks5": socks.SOCKS5,
+        "socks4": socks.SOCKS4,
+        "http": socks.HTTP,
+        "https": socks.HTTP,
+    }
+    return (
+        ptype_map.get(p["proxy_type"], socks.SOCKS5),
+        p["addr"],
+        p["port"],
+        p.get("rdns", True),
+        p.get("username"),
+        p.get("password"),
     )
 
+def proxy_str(p: dict) -> str:
+    if not p:
+        return "без прокси"
+    s = f"{p['proxy_type']}://"
+    if p.get("username"):
+        s += f"{p['username']}:***@"
+    s += f"{p['addr']}:{p['port']}"
+    return s
 
-def make_reply_button(text: str, emoji_key: str = None) -> KeyboardButton:
+# ═══════════════════════════════════════════════════════════════
+# МЕНЕДЖЕР СЕССИЙ
+# ═══════════════════════════════════════════════════════════════
+
+def get_sessions() -> List[str]:
+    """Возвращает список имён .session файлов (без расширения)"""
+    files = glob.glob(str(SESSIONS_DIR / "*.session"))
+    return [Path(f).stem for f in sorted(files)]
+
+def list_sessions():
+    sessions = get_sessions()
+    if not sessions:
+        print(f"{C.R}❌ Нет .session файлов в папке sessions/{C.RST}")
+        return []
+    print(f"\n{C.CY}{'─'*50}")
+    print(f"  📋 Найдено сессий: {len(sessions)}")
+    print(f"{'─'*50}{C.RST}")
+    for i, s in enumerate(sessions, 1):
+        print(f"  {C.W}{i:3}. {C.G}{s}{C.RST}")
+    print(f"{C.CY}{'─'*50}{C.RST}")
+    return sessions
+
+def select_sessions(prompt="Выбери сессии") -> List[str]:
     """
-    Создаёт KeyboardButton (Reply).
-    В request_icon_custom_emoji_id нельзя напрямую передать —
-    это поле для WebApp кнопок.
-    Используем emoji в тексте кнопки.
+    Выбор сессий: all / 1,2,3 / 1-5 / конкретный номер
     """
-    icon_text = ""
-    if emoji_key:
-        icon_text = f"{pe_plain(emoji_key)} "
+    sessions = list_sessions()
+    if not sessions:
+        return []
+    print(f"\n{C.Y}  {prompt}")
+    print(f"  (all = все, 1,3,5 = конкретные, 1-10 = диапазон){C.RST}")
+    choice = input(f"{C.CY}  > {C.RST}").strip().lower()
+
+    if choice == "all":
+        return sessions
+
+    selected = set()
+    parts = choice.replace(" ", "").split(",")
+    for part in parts:
+        if "-" in part:
+            try:
+                a, b = part.split("-")
+                for i in range(int(a), int(b) + 1):
+                    if 1 <= i <= len(sessions):
+                        selected.add(sessions[i - 1])
+            except ValueError:
+                pass
+        else:
+            try:
+                idx = int(part)
+                if 1 <= idx <= len(sessions):
+                    selected.add(sessions[idx - 1])
+            except ValueError:
+                pass
+    return list(selected)
+
+# ═══════════════════════════════════════════════════════════════
+# СОЗДАНИЕ КЛИЕНТА
+# ═══════════════════════════════════════════════════════════════
+
+async def create_client(session_name: str, proxy: dict = None) -> Optional[TelegramClient]:
+    api_id, api_hash = get_api_credentials()
+    session_path = str(SESSIONS_DIR / session_name)
+
+    kwargs = {}
+    if proxy:
+        try:
+            kwargs["proxy"] = proxy_to_telethon(proxy)
+        except Exception as e:
+            logger.warning(f"Proxy error: {e}")
+
+    client = TelegramClient(
+        session_path,
+        api_id,
+        api_hash,
+        device_model="Samsung Galaxy S23",
+        system_version="Android 14",
+        app_version="10.14.5",
+        lang_code="ru",
+        system_lang_code="ru-RU",
+        **kwargs
+    )
+    return client
+
+async def safe_connect(client: TelegramClient, session_name: str) -> bool:
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            print(f"  {C.R}❌ {session_name} — не авторизован{C.RST}")
+            await client.disconnect()
+            return False
+        return True
+    except (PhoneNumberBannedError, UserDeactivatedBanError, UserDeactivatedError):
+        print(f"  {C.R}💀 {session_name} — аккаунт забанен/удалён{C.RST}")
+        return False
+    except (AuthKeyUnregisteredError,):
+        print(f"  {C.R}🔑 {session_name} — сессия невалидна{C.RST}")
+        return False
+    except Exception as e:
+        print(f"  {C.R}⚠ {session_name} — ошибка: {e}{C.RST}")
+        return False
+
+# ═══════════════════════════════════════════════════════════════
+# УТИЛИТЫ ПАРСИНГА ССЫЛОК
+# ═══════════════════════════════════════════════════════════════
+
+def parse_tg_link(link: str) -> dict:
+    """
+    Парсит ссылку вида:
+      https://t.me/channel/123
+      https://t.me/c/1234567890/123
+      https://t.me/channel
+      https://t.me/+invite_hash
+      @channel
+      t.me/bot?start=ref
+    Возвращает dict с ключами: channel, post_id, invite_hash, bot, start_param
+    """
+    result = {"channel": None, "post_id": None, "invite_hash": None,
+              "bot": None, "start_param": None, "startapp": None}
+
+    link = link.strip()
+
+    # @channel
+    if link.startswith("@"):
+        result["channel"] = link[1:]
+        return result
+
+    # Нормализация
+    link = link.replace("https://t.me/", "").replace("http://t.me/", "")
+    link = link.replace("t.me/", "")
+
+    # Инвайт
+    if link.startswith("+") or link.startswith("joinchat/"):
+        result["invite_hash"] = link.replace("joinchat/", "").lstrip("+")
+        return result
+
+    parts = link.split("?")
+    path = parts[0].strip("/")
+    params = {}
+    if len(parts) > 1:
+        for kv in parts[1].split("&"):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                params[k] = v
+
+    segments = path.split("/")
+
+    # bot?start=ref
+    if "start" in params:
+        result["bot"] = segments[0]
+        result["start_param"] = params["start"]
+        return result
+
+    # webapp startapp
+    if "startapp" in params:
+        result["bot"] = segments[0]
+        result["startapp"] = params["startapp"]
+        return result
+
+    # c/1234567890/123 (приватный канал)
+    if len(segments) >= 3 and segments[0] == "c":
+        result["channel"] = int(segments[1])
+        result["post_id"] = int(segments[2])
+        return result
+
+    # channel/123
+    if len(segments) >= 2:
+        result["channel"] = segments[0]
+        try:
+            result["post_id"] = int(segments[1])
+        except ValueError:
+            pass
+        return result
+
+    # channel
+    if len(segments) == 1:
+        result["channel"] = segments[0]
+        return result
 
-    return KeyboardButton(text=f"{icon_text}{text}")
-
-
-# ============================================================
-# ЛОГИРОВАНИЕ
-# ============================================================
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# ============================================================
-# BOT & DISPATCHER
-# ============================================================
-
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
-router = Router()
-dp.include_router(router)
-
-# ============================================================
-# FSM STATES
-# ============================================================
-
-
-class TopUpStates(StatesGroup):
-    waiting_amount = State()
-    waiting_payment = State()
-
-
-class BuyGiftStates(StatesGroup):
-    waiting_target = State()
-
-
-class TradeStates(StatesGroup):
-    waiting_price = State()
-
-
-class CraftStates(StatesGroup):
-    selecting_nfts = State()
-
-
-class RentStates(StatesGroup):
-    waiting_price_duration = State()
-
-
-class AuctionStates(StatesGroup):
-    waiting_details = State()
-
-
-class AppealStates(StatesGroup):
-    waiting_text = State()
-
-
-class AppealRejectStates(StatesGroup):
-    waiting_reason = State()
-
-
-class AddRulesStates(StatesGroup):
-    waiting_text = State()
-
-
-class GiftBuyTarget(StatesGroup):
-    waiting_user_id = State()
-
-
-# ============================================================
-# NFT ХАРАКТЕРИСТИКИ — 50 моделей, 50 узоров, 50 фонов
-# ============================================================
-
-NFT_MODELS = [
-    {"name": "Phoenix", "chance": 0.1},
-    {"name": "Dragon", "chance": 0.15},
-    {"name": "Unicorn", "chance": 0.2},
-    {"name": "Griffin", "chance": 0.25},
-    {"name": "Leviathan", "chance": 0.3},
-    {"name": "Cerberus", "chance": 0.35},
-    {"name": "Hydra", "chance": 0.4},
-    {"name": "Chimera", "chance": 0.45},
-    {"name": "Basilisk", "chance": 0.5},
-    {"name": "Kraken", "chance": 0.55},
-    {"name": "Minotaur", "chance": 0.6},
-    {"name": "Sphinx", "chance": 0.65},
-    {"name": "Pegasus", "chance": 0.7},
-    {"name": "Centaur", "chance": 0.75},
-    {"name": "Manticore", "chance": 0.8},
-    {"name": "Wyvern", "chance": 0.85},
-    {"name": "Banshee", "chance": 0.9},
-    {"name": "Golem", "chance": 0.95},
-    {"name": "Djinn", "chance": 1.0},
-    {"name": "Titan", "chance": 1.1},
-    {"name": "Valkyrie", "chance": 1.2},
-    {"name": "Fenrir", "chance": 1.3},
-    {"name": "Naga", "chance": 1.4},
-    {"name": "Behemoth", "chance": 1.5},
-    {"name": "Seraphim", "chance": 1.6},
-    {"name": "Wraith", "chance": 1.7},
-    {"name": "Revenant", "chance": 1.8},
-    {"name": "Shade", "chance": 1.9},
-    {"name": "Specter", "chance": 2.0},
-    {"name": "Phantom", "chance": 2.05},
-    {"name": "Ghoul", "chance": 2.1},
-    {"name": "Imp", "chance": 2.15},
-    {"name": "Sprite", "chance": 2.2},
-    {"name": "Pixie", "chance": 2.25},
-    {"name": "Sylph", "chance": 2.3},
-    {"name": "Dryad", "chance": 2.35},
-    {"name": "Nymph", "chance": 2.4},
-    {"name": "Satyr", "chance": 2.45},
-    {"name": "Faun", "chance": 2.5},
-    {"name": "Elemental", "chance": 2.55},
-    {"name": "Archon", "chance": 2.6},
-    {"name": "Herald", "chance": 2.65},
-    {"name": "Sentinel", "chance": 2.7},
-    {"name": "Warden", "chance": 2.75},
-    {"name": "Oracle", "chance": 2.8},
-    {"name": "Prophet", "chance": 2.85},
-    {"name": "Mystic", "chance": 2.9},
-    {"name": "Sorcerer", "chance": 2.95},
-    {"name": "Warlock", "chance": 3.0},
-    {"name": "Enchanter", "chance": 3.0},
-]
-
-NFT_PATTERNS = [
-    {"name": "Nebula Swirl", "chance": 0.1},
-    {"name": "Cosmic Web", "chance": 0.15},
-    {"name": "Void Fracture", "chance": 0.2},
-    {"name": "Quantum Dots", "chance": 0.25},
-    {"name": "Plasma Wave", "chance": 0.3},
-    {"name": "Crystal Lattice", "chance": 0.35},
-    {"name": "Aurora Stream", "chance": 0.4},
-    {"name": "Lightning Mesh", "chance": 0.45},
-    {"name": "Shadow Weave", "chance": 0.5},
-    {"name": "Frost Spiral", "chance": 0.55},
-    {"name": "Ember Trail", "chance": 0.6},
-    {"name": "Ocean Ripple", "chance": 0.65},
-    {"name": "Sand Dune", "chance": 0.7},
-    {"name": "Magma Flow", "chance": 0.75},
-    {"name": "Vine Tangle", "chance": 0.8},
-    {"name": "Star Burst", "chance": 0.85},
-    {"name": "Moon Phase", "chance": 0.9},
-    {"name": "Sun Flare", "chance": 0.95},
-    {"name": "Geo Hex", "chance": 1.0},
-    {"name": "Tribal Mark", "chance": 1.1},
-    {"name": "Celtic Knot", "chance": 1.2},
-    {"name": "Mandala", "chance": 1.3},
-    {"name": "Fractal Tree", "chance": 1.4},
-    {"name": "Binary Rain", "chance": 1.5},
-    {"name": "Circuit Board", "chance": 1.6},
-    {"name": "DNA Helix", "chance": 1.7},
-    {"name": "Pulse Line", "chance": 1.8},
-    {"name": "Wave Form", "chance": 1.9},
-    {"name": "Zigzag", "chance": 2.0},
-    {"name": "Chevron", "chance": 2.05},
-    {"name": "Diamond Grid", "chance": 2.1},
-    {"name": "Honeycomb", "chance": 2.15},
-    {"name": "Mosaic", "chance": 2.2},
-    {"name": "Paisley", "chance": 2.25},
-    {"name": "Damask", "chance": 2.3},
-    {"name": "Herringbone", "chance": 2.35},
-    {"name": "Plaid", "chance": 2.4},
-    {"name": "Houndstooth", "chance": 2.45},
-    {"name": "Polka Dot", "chance": 2.5},
-    {"name": "Stripe", "chance": 2.55},
-    {"name": "Checkered", "chance": 2.6},
-    {"name": "Argyle", "chance": 2.65},
-    {"name": "Floral", "chance": 2.7},
-    {"name": "Baroque", "chance": 2.75},
-    {"name": "Art Deco", "chance": 2.8},
-    {"name": "Minimalist", "chance": 2.85},
-    {"name": "Abstract", "chance": 2.9},
-    {"name": "Grunge", "chance": 2.95},
-    {"name": "Watercolor", "chance": 3.0},
-    {"name": "Sketch", "chance": 3.0},
-]
-
-NFT_BACKGROUNDS = [
-    {"name": "Eternal Void", "chance": 0.1},
-    {"name": "Supernova", "chance": 0.15},
-    {"name": "Black Hole", "chance": 0.2},
-    {"name": "Galactic Core", "chance": 0.25},
-    {"name": "Dark Matter", "chance": 0.3},
-    {"name": "Astral Plane", "chance": 0.35},
-    {"name": "Quantum Realm", "chance": 0.4},
-    {"name": "Nether World", "chance": 0.45},
-    {"name": "Elysium", "chance": 0.5},
-    {"name": "Valhalla", "chance": 0.55},
-    {"name": "Olympus", "chance": 0.6},
-    {"name": "Asgard", "chance": 0.65},
-    {"name": "Avalon", "chance": 0.7},
-    {"name": "Atlantis", "chance": 0.75},
-    {"name": "El Dorado", "chance": 0.8},
-    {"name": "Shangri-La", "chance": 0.85},
-    {"name": "Arcadia", "chance": 0.9},
-    {"name": "Eden", "chance": 0.95},
-    {"name": "Nirvana", "chance": 1.0},
-    {"name": "Utopia", "chance": 1.1},
-    {"name": "Crimson Sky", "chance": 1.2},
-    {"name": "Azure Deep", "chance": 1.3},
-    {"name": "Emerald Forest", "chance": 1.4},
-    {"name": "Golden Desert", "chance": 1.5},
-    {"name": "Silver Mountain", "chance": 1.6},
-    {"name": "Ruby Cavern", "chance": 1.7},
-    {"name": "Sapphire Ocean", "chance": 1.8},
-    {"name": "Amethyst Cave", "chance": 1.9},
-    {"name": "Topaz Valley", "chance": 2.0},
-    {"name": "Opal Lake", "chance": 2.05},
-    {"name": "Pearl Shore", "chance": 2.1},
-    {"name": "Jade Garden", "chance": 2.15},
-    {"name": "Onyx Tower", "chance": 2.2},
-    {"name": "Ivory Palace", "chance": 2.25},
-    {"name": "Bronze Arena", "chance": 2.3},
-    {"name": "Copper Mine", "chance": 2.35},
-    {"name": "Tin Workshop", "chance": 2.4},
-    {"name": "Iron Forge", "chance": 2.45},
-    {"name": "Steel Citadel", "chance": 2.5},
-    {"name": "Chrome Lab", "chance": 2.55},
-    {"name": "Neon City", "chance": 2.6},
-    {"name": "Pixel World", "chance": 2.65},
-    {"name": "Retro Arcade", "chance": 2.7},
-    {"name": "Cyber Punk", "chance": 2.75},
-    {"name": "Steam Punk", "chance": 2.8},
-    {"name": "Solar Punk", "chance": 2.85},
-    {"name": "Bio Dome", "chance": 2.9},
-    {"name": "Coral Reef", "chance": 2.95},
-    {"name": "Tundra", "chance": 3.0},
-    {"name": "Savanna", "chance": 3.0},
-]
-
-# ============================================================
-# STARDOM КОНФИГУРАЦИЯ
-# ============================================================
-
-STARDOM_LEVELS = {
-    1: {
-        "name": "Stardom I",
-        "price": 135,
-        "duration_months": 2,
-        "nft_create_fee": 15,
-        "nft_transfer_fee": 15,
-        "gift_transfer_fee": 15,
-        "exclusive_gift": "Потухшая Искра",
-        "exclusive_emoji": "🕯"
-    },
-    2: {
-        "name": "Stardom II",
-        "price": 250,
-        "duration_months": 3,
-        "nft_create_fee": 10,
-        "nft_transfer_fee": 10,
-        "gift_transfer_fee": 15,
-        "exclusive_gift": "Искра",
-        "exclusive_emoji": "✨"
-    },
-    3: {
-        "name": "Stardom III",
-        "price": 350,
-        "duration_months": 3,
-        "nft_create_fee": 5,
-        "nft_transfer_fee": 5,
-        "gift_transfer_fee": 15,
-        "exclusive_gift": "Сильная Искра",
-        "exclusive_emoji": "💫"
-    },
-    4: {
-        "name": "Stardom IV",
-        "price": 500,
-        "duration_months": 5,
-        "nft_create_fee": 3,
-        "nft_transfer_fee": 3,
-        "gift_transfer_fee": 5,
-        "exclusive_gift": "Мощная Искра",
-        "exclusive_emoji": "🌟"
-    },
-    5: {
-        "name": "Stardom V",
-        "price": 750,
-        "duration_months": 6,
-        "nft_create_fee": 0,
-        "nft_transfer_fee": 0,
-        "gift_transfer_fee": 0,
-        "exclusive_gift": "Переполненная Искра",
-        "exclusive_emoji": "💥"
-    },
-}
-
-# ============================================================
-# ДОСТИЖЕНИЯ
-# ============================================================
-
-ACHIEVEMENTS = {
-    "first_gift": {"name": "Первый подарок 🎁", "desc": "Купите свой первый подарок"},
-    "first_nft": {"name": "Первый NFT 🖼", "desc": "Улучшите подарок до NFT"},
-    "first_craft": {"name": "Первый крафт 🔨", "desc": "Скрафтите свой первый NFT"},
-    "first_stardom": {"name": "Звёздный статус 🌟", "desc": "Приобретите любой Stardom"},
-}
-
-# ============================================================
-# БАЗА ДАННЫХ — ИНИЦИАЛИЗАЦИЯ
-# ============================================================
-
-
-def init_db():
-    """Создаёт все необходимые таблицы в SQLite."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    c = conn.cursor()
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT DEFAULT '',
-            first_name TEXT DEFAULT '',
-            stars INTEGER DEFAULT 0,
-            stardom_level INTEGER DEFAULT 0,
-            stardom_expires TEXT DEFAULT '',
-            is_banned INTEGER DEFAULT 0,
-            ban_reason TEXT DEFAULT '',
-            ban_until TEXT DEFAULT '',
-            is_buy_banned INTEGER DEFAULT 0,
-            buy_ban_reason TEXT DEFAULT '',
-            is_trade_banned INTEGER DEFAULT 0,
-            trade_ban_reason TEXT DEFAULT '',
-            appeal_count INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (datetime('now')),
-            achievements TEXT DEFAULT '[]'
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS gifts (
-            gift_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            emoji TEXT DEFAULT '🎁',
-            quantity INTEGER DEFAULT 0,
-            sold INTEGER DEFAULT 0,
-            price INTEGER NOT NULL,
-            rarity TEXT DEFAULT 'common',
-            is_active INTEGER DEFAULT 1
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS limited_gifts (
-            limit_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            emoji TEXT DEFAULT '🎁',
-            price INTEGER NOT NULL,
-            expires_at TEXT NOT NULL,
-            sold INTEGER DEFAULT 0,
-            is_active INTEGER DEFAULT 1
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS inventory (
-            inv_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            gift_id INTEGER,
-            limit_id INTEGER,
-            gift_name TEXT NOT NULL,
-            gift_emoji TEXT DEFAULT '🎁',
-            rarity TEXT DEFAULT 'common',
-            is_nft INTEGER DEFAULT 0,
-            nft_id INTEGER,
-            is_limited INTEGER DEFAULT 0,
-            purchased_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS nfts (
-            nft_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_id INTEGER NOT NULL,
-            gift_name TEXT NOT NULL,
-            gift_emoji TEXT DEFAULT '🎁',
-            model_name TEXT NOT NULL,
-            model_chance REAL NOT NULL,
-            pattern_name TEXT NOT NULL,
-            pattern_chance REAL NOT NULL,
-            bg_name TEXT NOT NULL,
-            bg_chance REAL NOT NULL,
-            is_crafted INTEGER DEFAULT 0,
-            source_gift_id INTEGER,
-            created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (owner_id) REFERENCES users(user_id)
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
-            trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            seller_id INTEGER NOT NULL,
-            nft_id INTEGER NOT NULL,
-            price INTEGER NOT NULL,
-            is_active INTEGER DEFAULT 1,
-            created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (seller_id) REFERENCES users(user_id),
-            FOREIGN KEY (nft_id) REFERENCES nfts(nft_id)
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS auctions (
-            auction_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            seller_id INTEGER NOT NULL,
-            nft_id INTEGER NOT NULL,
-            min_bid INTEGER NOT NULL,
-            bid_step INTEGER NOT NULL DEFAULT 10,
-            ends_at TEXT NOT NULL,
-            is_active INTEGER DEFAULT 1,
-            created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (seller_id) REFERENCES users(user_id),
-            FOREIGN KEY (nft_id) REFERENCES nfts(nft_id)
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS auction_bids (
-            bid_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            auction_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            amount INTEGER NOT NULL,
-            bid_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (auction_id) REFERENCES auctions(auction_id),
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS nft_rentals (
-            rental_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_id INTEGER NOT NULL,
-            renter_id INTEGER,
-            nft_id INTEGER NOT NULL,
-            price_per_hour INTEGER NOT NULL,
-            ends_at TEXT NOT NULL,
-            is_active INTEGER DEFAULT 1,
-            is_rented INTEGER DEFAULT 0,
-            rent_started TEXT DEFAULT '',
-            rent_ends TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (owner_id) REFERENCES users(user_id),
-            FOREIGN KEY (nft_id) REFERENCES nfts(nft_id)
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS promocodes (
-            promo_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT UNIQUE NOT NULL,
-            reward_type TEXT NOT NULL,
-            reward_value TEXT NOT NULL,
-            max_uses INTEGER DEFAULT 1,
-            current_uses INTEGER DEFAULT 0,
-            is_active INTEGER DEFAULT 1
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS promo_uses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            promo_id INTEGER NOT NULL,
-            used_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (user_id) REFERENCES users(user_id),
-            FOREIGN KEY (promo_id) REFERENCES promocodes(promo_id)
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS rules (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            text TEXT DEFAULT 'Правила ещё не установлены.'
-        )
-    """)
-    c.execute("INSERT OR IGNORE INTO rules (id, text) VALUES (1, 'Правила ещё не установлены.')")
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS friends (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            friend_id INTEGER NOT NULL,
-            added_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(user_id, friend_id),
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS moderators (
-            user_id INTEGER PRIMARY KEY
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS moder_ban_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            moder_id INTEGER NOT NULL,
-            target_id INTEGER NOT NULL,
-            banned_at TEXT DEFAULT (datetime('now'))
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS payments (
-            payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            amount INTEGER NOT NULL,
-            tg_payment_id TEXT DEFAULT '',
-            status TEXT DEFAULT 'pending',
-            created_at TEXT DEFAULT (datetime('now'))
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS global_counters (
-            key TEXT PRIMARY KEY,
-            value INTEGER DEFAULT 0
-        )
-    """)
-    c.execute("INSERT OR IGNORE INTO global_counters (key, value) VALUES ('gift_purchase_counter', 0)")
-    c.execute("INSERT OR IGNORE INTO global_counters (key, value) VALUES ('nft_counter', 0)")
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS appeals (
-            appeal_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            text TEXT NOT NULL,
-            status TEXT DEFAULT 'pending',
-            admin_response TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now'))
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS inline_transfers (
-            transfer_id TEXT PRIMARY KEY,
-            sender_id INTEGER NOT NULL,
-            inv_id INTEGER,
-            nft_id INTEGER,
-            transfer_type TEXT NOT NULL,
-            is_claimed INTEGER DEFAULT 0,
-            claimed_by INTEGER,
-            message_id TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now'))
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-    logger.info("✅ База данных инициализирована")
-
-
-# ============================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ БД
-# ============================================================
-
-
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def ensure_user(user_id: int, username: str = "", first_name: str = ""):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-    if c.fetchone() is None:
-        c.execute(
-            "INSERT INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
-            (user_id, username, first_name)
-        )
-    else:
-        c.execute(
-            "UPDATE users SET username = ?, first_name = ? WHERE user_id = ?",
-            (username, first_name, user_id)
-        )
-    conn.commit()
-    conn.close()
-
-
-def get_user(user_id: int) -> Optional[dict]:
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return dict(row)
-    return None
-
-
-def update_stars(user_id: int, amount: int):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
-    conn.close()
-
-
-def get_stars(user_id: int) -> int:
-    user = get_user(user_id)
-    return user["stars"] if user else 0
-
-
-def get_next_counter(key: str) -> int:
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE global_counters SET value = value + 1 WHERE key = ?", (key,))
-    c.execute("SELECT value FROM global_counters WHERE key = ?", (key,))
-    val = c.fetchone()["value"]
-    conn.commit()
-    conn.close()
-    return val
-
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-
-def is_moderator(user_id: int) -> bool:
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM moderators WHERE user_id = ?", (user_id,))
-    result = c.fetchone() is not None
-    conn.close()
     return result
 
-
-def is_banned(user_id: int) -> bool:
-    user = get_user(user_id)
-    if not user or user["is_banned"] == 0:
-        return False
-    if user["ban_until"] == "permanent":
-        return True
-    if user["ban_until"]:
+async def resolve_channel(client, channel_input):
+    """Резолвит канал по username, id или ссылке"""
+    if isinstance(channel_input, int):
         try:
-            ban_until = datetime.fromisoformat(user["ban_until"])
-            if datetime.now() > ban_until:
-                conn = get_db()
-                c = conn.cursor()
-                c.execute(
-                    "UPDATE users SET is_banned = 0, ban_reason = '', ban_until = '' WHERE user_id = ?",
-                    (user_id,)
-                )
-                conn.commit()
-                conn.close()
-                return False
-            return True
+            entity = await client.get_entity(PeerChannel(channel_input))
+            return entity
         except Exception:
-            return True
-    return True
+            entity = await client.get_entity(channel_input)
+            return entity
+    return await client.get_entity(channel_input)
 
+def random_delay(min_s=1.0, max_s=3.0):
+    return random.uniform(min_s, max_s)
 
-def get_user_stardom(user_id: int) -> int:
-    user = get_user(user_id)
-    if not user or user["stardom_level"] == 0:
-        return 0
-    if user["stardom_expires"]:
+async def human_delay(min_s=0.5, max_s=2.5):
+    await asyncio.sleep(random_delay(min_s, max_s))
+
+def format_count(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n/1_000:.1f}K"
+    return str(n)
+
+# ═══════════════════════════════════════════════════════════════
+# EXECUTOR — запуск задач по сессиям
+# ═══════════════════════════════════════════════════════════════
+
+async def execute_on_sessions(
+    sessions: List[str],
+    task_func,
+    task_name: str = "задача",
+    max_concurrent: int = 5,
+    delay_between: Tuple[float, float] = (1.0, 3.0),
+    **kwargs
+):
+    """
+    Запускает task_func(client, session_name, **kwargs) для каждой сессии
+    с ограничением параллельности и задержками.
+    """
+    proxies = load_proxies()
+    semaphore = asyncio.Semaphore(max_concurrent)
+    results = {"success": 0, "fail": 0, "total": len(sessions)}
+
+    print(f"\n{C.CY}{'═'*50}")
+    print(f"  🚀 {task_name}")
+    print(f"  📊 Сессий: {len(sessions)} | Прокси: {len(proxies)}")
+    print(f"{'═'*50}{C.RST}\n")
+
+    async def worker(session_name, index):
+        async with semaphore:
+            proxy = proxies[index % len(proxies)] if proxies else None
+            client = await create_client(session_name, proxy)
+            if not client:
+                results["fail"] += 1
+                return
+
+            try:
+                ok = await safe_connect(client, session_name)
+                if not ok:
+                    results["fail"] += 1
+                    return
+
+                await task_func(client, session_name, **kwargs)
+                results["success"] += 1
+                print(f"  {C.G}✅ {session_name} — OK{C.RST}")
+            except FloodWaitError as e:
+                wait = e.seconds
+                print(f"  {C.Y}⏳ {session_name} — FloodWait {wait}s{C.RST}")
+                if wait < 120:
+                    await asyncio.sleep(wait)
+                    try:
+                        await task_func(client, session_name, **kwargs)
+                        results["success"] += 1
+                        print(f"  {C.G}✅ {session_name} — OK (после ожидания){C.RST}")
+                    except Exception as e2:
+                        results["fail"] += 1
+                        print(f"  {C.R}❌ {session_name} — {e2}{C.RST}")
+                else:
+                    results["fail"] += 1
+            except Exception as e:
+                results["fail"] += 1
+                print(f"  {C.R}❌ {session_name} — {e}{C.RST}")
+            finally:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+
+            await asyncio.sleep(random_delay(*delay_between))
+
+    tasks = [worker(s, i) for i, s in enumerate(sessions)]
+    await asyncio.gather(*tasks)
+
+    print(f"\n{C.CY}{'═'*50}")
+    print(f"  📊 Результат: {C.G}✅ {results['success']}{C.RST}"
+          f" | {C.R}❌ {results['fail']}{C.RST}"
+          f" | 📊 {results['total']} всего")
+    print(f"{C.CY}{'═'*50}{C.RST}")
+
+    return results
+
+# ═══════════════════════════════════════════════════════════════
+# МЕНЮ
+# ═══════════════════════════════════════════════════════════════
+
+def print_menu():
+    clear()
+    banner()
+    menu = f"""
+{C.CY}┌────┬─────────────────────────────────────────────────────┐
+│    │ {C.BOLD}НАКРУТКА{C.RST}{C.CY}                                                │
+│{C.W}  1 {C.CY}│ 👁  Просмотр поста                                     │
+│{C.W}  2 {C.CY}│ 👍 Реакция                                             │
+│{C.W}  3 {C.CY}│ 📢 Подписка                                            │
+│{C.W}  4 {C.CY}│ 🚀 Всё сразу                                           │
+│{C.W}  5 {C.CY}│ 💬 Комментарий                                         │
+│{C.W}  6 {C.CY}│ 📤 Пересылка                                           │
+│{C.W}  7 {C.CY}│ 📊 Голосование                                         │
+│{C.W}  8 {C.CY}│ 🔘 Inline кнопки                                       │
+│{C.W}  9 {C.CY}│ 💥 Массовая реакция на N постов                        │
+├────┼─────────────────────────────────────────────────────────┤
+│    │ {C.BOLD}БОТЫ / WEBAPP{C.RST}{C.CY}                                          │
+│{C.W} 10 {C.CY}│ 🤖 Авто-старт бота + реферальная ссылка               │
+│{C.W} 11 {C.CY}│ 📋 Сценарий бота из JSON                               │
+│{C.W} 12 {C.CY}│ 🌐 WebApp + startapp параметр                          │
+├────┼─────────────────────────────────────────────────────────┤
+│    │ {C.BOLD}РАССЫЛКА{C.RST}{C.CY}                                               │
+│{C.W} 13 {C.CY}│ 📨 Рассылка в ЛС                                      │
+│{C.W} 14 {C.CY}│ 👥 Инвайт                                              │
+├────┼─────────────────────────────────────────────────────────┤
+│    │ {C.BOLD}СООБЩЕНИЯ{C.RST}{C.CY}                                              │
+│{C.W} 15 {C.CY}│ 📝 Отправка с медиа + Markdown                         │
+│{C.W} 16 {C.CY}│ ⏰ Отложенная отправка                                 │
+│{C.W} 17 {C.CY}│ ✏️  Редактирование                                      │
+│{C.W} 18 {C.CY}│ 📌 Закреп/откреп                                       │
+│{C.W} 19 {C.CY}│ 🗑  Удалить свои сообщения                             │
+├────┼─────────────────────────────────────────────────────────┤
+│    │ {C.BOLD}КАНАЛЫ{C.RST}{C.CY}                                                 │
+│{C.W} 20 {C.CY}│ ➕ Создать канал/группу                                 │
+│{C.W} 21 {C.CY}│ ⚙️  Настройка (название/описание/фото/username)         │
+│{C.W} 22 {C.CY}│ 👑 Назначить админа (с выбором прав)                   │
+│{C.W} 23 {C.CY}│ 🔨 Массовый бан/кик                                    │
+│{C.W} 24 {C.CY}│ 🧹 Очистка (удалить все посты)                         │
+│{C.W} 25 {C.CY}│ 📋 Копировать настройки канала                          │
+├────┼─────────────────────────────────────────────────────────┤
+│    │ {C.BOLD}РЕПОРТЫ{C.RST}{C.CY}                                                │
+│{C.W} 26 {C.CY}│ 🚨 Репорт на юзера/канал (8 причин)                    │
+│{C.W} 27 {C.CY}│ 🚨 Репорт на сообщение                                 │
+│{C.W} 28 {C.CY}│ 🚫 Массовая блокировка                                 │
+├────┼─────────────────────────────────────────────────────────┤
+│    │ {C.BOLD}ПАРСИНГ{C.RST}{C.CY}                                                │
+│{C.W} 29 {C.CY}│ 🔍 Парсер участников                                   │
+│{C.W} 30 {C.CY}│ 📊 Статистика канала                                   │
+│{C.W} 31 {C.CY}│ 📥 Скачивание медиа                                    │
+├────┼─────────────────────────────────────────────────────────┤
+│    │ {C.BOLD}АВТОМАТИЗАЦИЯ{C.RST}{C.CY}                                          │
+│{C.W} 32 {C.CY}│ 👀 Мониторинг (авто-реакции на новые посты)            │
+│{C.W} 33 {C.CY}│ 🤖 Авто-ответчик по ключевым словам                   │
+│{C.W} 34 {C.CY}│ 📝 Авто-постинг                                        │
+│{C.W} 35 {C.CY}│ 📋 Задачи из JSON                                      │
+├────┼─────────────────────────────────────────────────────────┤
+│    │ {C.BOLD}АНТИДЕТЕКТ{C.RST}{C.CY}                                             │
+│{C.W} 36 {C.CY}│ 🔥 Прогрев (чтение, скролл, профили)                  │
+│{C.W} 37 {C.CY}│ 🟢 Имитация онлайна (параллельно)                     │
+├────┼─────────────────────────────────────────────────────────┤
+│    │ {C.BOLD}АККАУНТЫ{C.RST}{C.CY}                                               │
+│{C.W} 38 {C.CY}│ ✅ Чекер                                               │
+│{C.W} 39 {C.CY}│ 📱 Активные сессии                                     │
+│{C.W} 40 {C.CY}│ 💀 Сброс ВСЕХ сессий                                   │
+│{C.W} 41 {C.CY}│ 🎯 Выборочный сброс                                    │
+│{C.W} 42 {C.CY}│ 🔑 Запрос кода + 2FA                                   │
+│{C.W} 43 {C.CY}│ ℹ️  Инфо                                                │
+│{C.W} 44 {C.CY}│ ✏️  Имя/био                                             │
+│{C.W} 45 {C.CY}│ 🖼  Фото                                               │
+│{C.W} 46 {C.CY}│ 🔐 2FA                                                 │
+│{C.W} 47 {C.CY}│ 🚪 Отписка от каналов                                  │
+│{C.W} 48 {C.CY}│ ☠️  Удалить аккаунт                                     │
+├────┼─────────────────────────────────────────────────────────┤
+│{C.W} 49 {C.CY}│ 📋 Список сессий                                       │
+│{C.W} 50 {C.CY}│ 🌐 Список прокси                                       │
+│{C.R}  0 {C.CY}│ ❌ Выход                                               │
+└────┴─────────────────────────────────────────────────────────┘{C.RST}"""
+    print(menu)
+
+def pause():
+    input(f"\n{C.DIM}  Нажми Enter для продолжения...{C.RST}")
+
+def ask(prompt: str, default: str = "") -> str:
+    val = input(f"{C.CY}  {prompt}{C.RST}").strip()
+    return val if val else default
+
+def ask_int(prompt: str, default: int = 0) -> int:
+    val = ask(prompt, str(default))
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+def ask_reaction() -> str:
+    print(f"\n{C.Y}  Доступные реакции:")
+    reactions = ["👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔",
+                 "🤯", "😱", "🤬", "😢", "🎉", "🤩", "🤮", "💩",
+                 "🙏", "👌", "🕊", "🤡", "🥱", "🥴", "😍", "🐳",
+                 "❤️‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆",
+                 "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈",
+                 "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈",
+                 "😇", "😨", "🤝", "✍️", "🤗", "🫡", "🎅", "🎄",
+                 "☃️", "💅", "🤪", "🗿", "🆒", "💘", "🙉", "🦄",
+                 "😘", "💊", "🙊", "😎", "👾", "🤷‍♂️", "🤷", "🤷‍♀️",
+                 "😡"]
+    for i in range(0, len(reactions), 10):
+        chunk = reactions[i:i+10]
+        print(f"  {' '.join(chunk)}")
+    print(f"{C.RST}")
+    r = ask("Реакция (emoji): ")
+    return r if r else "👍"
+
+# ═══════════════════════════════════════════════════════════════
+# КОНЕЦ ЧАСТИ 1
+# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# ЧАСТЬ 2 — ФУНКЦИИ 1-35
+# ═══════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────
+# 1. ПРОСМОТР ПОСТА
+# ─────────────────────────────────────────────────────────────
+
+async def task_view_post(client, session_name, **kw):
+    channel = kw["channel"]
+    post_id = kw["post_id"]
+    entity = await resolve_channel(client, channel)
+    await client(GetMessagesViewsRequest(
+        peer=entity,
+        id=[post_id],
+        increment=True
+    ))
+    await human_delay(0.5, 1.5)
+
+async def action_view_post():
+    link = ask("Ссылка на пост (t.me/channel/123): ")
+    parsed = parse_tg_link(link)
+    if not parsed["channel"] or not parsed["post_id"]:
+        print(f"{C.R}❌ Неверная ссылка. Нужен формат: t.me/channel/123{C.RST}")
+        return
+    sessions = select_sessions("Выбери аккаунты для просмотра")
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_view_post,
+        task_name="👁 Просмотр поста",
+        channel=parsed["channel"],
+        post_id=parsed["post_id"]
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 2. РЕАКЦИЯ
+# ─────────────────────────────────────────────────────────────
+
+async def task_send_reaction(client, session_name, **kw):
+    channel = kw["channel"]
+    post_id = kw["post_id"]
+    reaction = kw["reaction"]
+    entity = await resolve_channel(client, channel)
+
+    # Сначала просмотр
+    await client(GetMessagesViewsRequest(
+        peer=entity, id=[post_id], increment=True
+    ))
+    await human_delay(0.5, 1.5)
+
+    react_obj = ReactionEmoji(emoticon=reaction)
+    await client(SendReactionRequest(
+        peer=entity,
+        msg_id=post_id,
+        reaction=[react_obj]
+    ))
+    await human_delay(0.3, 1.0)
+
+async def action_send_reaction():
+    link = ask("Ссылка на пост: ")
+    parsed = parse_tg_link(link)
+    if not parsed["channel"] or not parsed["post_id"]:
+        print(f"{C.R}❌ Неверная ссылка{C.RST}")
+        return
+    reaction = ask_reaction()
+    sessions = select_sessions("Выбери аккаунты для реакции")
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_send_reaction,
+        task_name=f"👍 Реакция {reaction}",
+        channel=parsed["channel"],
+        post_id=parsed["post_id"],
+        reaction=reaction
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 3. ПОДПИСКА
+# ─────────────────────────────────────────────────────────────
+
+async def task_subscribe(client, session_name, **kw):
+    channel = kw["channel"]
+    invite_hash = kw.get("invite_hash")
+
+    if invite_hash:
+        from telethon.tl.functions.messages import ImportChatInviteRequest
         try:
-            expires = datetime.fromisoformat(user["stardom_expires"])
-            if datetime.now() > expires:
-                conn = get_db()
-                c = conn.cursor()
-                c.execute(
-                    "UPDATE users SET stardom_level = 0, stardom_expires = '' WHERE user_id = ?",
-                    (user_id,)
-                )
-                conn.commit()
-                conn.close()
-                return 0
+            await client(ImportChatInviteRequest(invite_hash))
+        except UserAlreadyParticipantError:
+            pass
+    else:
+        entity = await resolve_channel(client, channel)
+        try:
+            await client(JoinChannelRequest(entity))
+        except UserAlreadyParticipantError:
+            pass
+    await human_delay(1.0, 3.0)
+
+async def action_subscribe():
+    link = ask("Ссылка на канал/группу (или @username): ")
+    parsed = parse_tg_link(link)
+    sessions = select_sessions("Выбери аккаунты для подписки")
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_subscribe,
+        task_name="📢 Подписка",
+        channel=parsed["channel"],
+        invite_hash=parsed.get("invite_hash")
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 4. ВСЁ СРАЗУ (просмотр + реакция + подписка)
+# ─────────────────────────────────────────────────────────────
+
+async def task_all_in_one(client, session_name, **kw):
+    channel = kw["channel"]
+    post_id = kw["post_id"]
+    reaction = kw["reaction"]
+    invite_hash = kw.get("invite_hash")
+
+    # Подписка
+    if invite_hash:
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+        try:
+            await client(ImportChatInviteRequest(invite_hash))
+        except UserAlreadyParticipantError:
+            pass
+    else:
+        entity = await resolve_channel(client, channel)
+        try:
+            await client(JoinChannelRequest(entity))
+        except UserAlreadyParticipantError:
+            pass
+
+    await human_delay(1.0, 2.5)
+
+    # Просмотр
+    entity = await resolve_channel(client, channel)
+    await client(GetMessagesViewsRequest(
+        peer=entity, id=[post_id], increment=True
+    ))
+    await human_delay(0.5, 1.5)
+
+    # Реакция
+    react_obj = ReactionEmoji(emoticon=reaction)
+    await client(SendReactionRequest(
+        peer=entity, msg_id=post_id,
+        reaction=[react_obj]
+    ))
+    await human_delay(0.3, 1.0)
+
+async def action_all_in_one():
+    link = ask("Ссылка на пост: ")
+    parsed = parse_tg_link(link)
+    if not parsed["channel"] or not parsed["post_id"]:
+        print(f"{C.R}❌ Нужна ссылка на пост{C.RST}")
+        return
+    reaction = ask_reaction()
+    sessions = select_sessions("Выбери аккаунты")
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_all_in_one,
+        task_name="🚀 Подписка + Просмотр + Реакция",
+        channel=parsed["channel"],
+        post_id=parsed["post_id"],
+        reaction=reaction,
+        invite_hash=parsed.get("invite_hash")
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 5. КОММЕНТАРИЙ
+# ─────────────────────────────────────────────────────────────
+
+async def task_comment(client, session_name, **kw):
+    channel = kw["channel"]
+    post_id = kw["post_id"]
+    comments = kw["comments"]
+    entity = await resolve_channel(client, channel)
+
+    comment_text = random.choice(comments)
+    await client.send_message(
+        entity=entity,
+        message=comment_text,
+        comment_to=post_id
+    )
+    await human_delay(1.0, 3.0)
+
+async def action_comment():
+    link = ask("Ссылка на пост: ")
+    parsed = parse_tg_link(link)
+    if not parsed["channel"] or not parsed["post_id"]:
+        print(f"{C.R}❌ Нужна ссылка на пост{C.RST}")
+        return
+    print(f"{C.Y}  Введи комментарии (каждый с новой строки, пустая строка = конец):{C.RST}")
+    comments = []
+    while True:
+        line = input("  > ").strip()
+        if not line:
+            break
+        comments.append(line)
+    if not comments:
+        print(f"{C.R}❌ Нет комментариев{C.RST}")
+        return
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_comment,
+        task_name="💬 Комментарий",
+        channel=parsed["channel"],
+        post_id=parsed["post_id"],
+        comments=comments
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 6. ПЕРЕСЫЛКА
+# ─────────────────────────────────────────────────────────────
+
+async def task_forward(client, session_name, **kw):
+    from_channel = kw["from_channel"]
+    post_id = kw["post_id"]
+    to_channel = kw["to_channel"]
+
+    from_entity = await resolve_channel(client, from_channel)
+    to_entity = await resolve_channel(client, to_channel)
+
+    await client.forward_messages(
+        entity=to_entity,
+        messages=post_id,
+        from_peer=from_entity
+    )
+    await human_delay(1.0, 2.0)
+
+async def action_forward():
+    link = ask("Ссылка на пост для пересылки: ")
+    parsed = parse_tg_link(link)
+    if not parsed["channel"] or not parsed["post_id"]:
+        print(f"{C.R}❌ Нужна ссылка на пост{C.RST}")
+        return
+    to_link = ask("Куда переслать (канал/группа/@username): ")
+    to_parsed = parse_tg_link(to_link)
+    if not to_parsed["channel"]:
+        print(f"{C.R}❌ Неверный получатель{C.RST}")
+        return
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_forward,
+        task_name="📤 Пересылка",
+        from_channel=parsed["channel"],
+        post_id=parsed["post_id"],
+        to_channel=to_parsed["channel"]
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 7. ГОЛОСОВАНИЕ
+# ─────────────────────────────────────────────────────────────
+
+async def task_vote(client, session_name, **kw):
+    channel = kw["channel"]
+    post_id = kw["post_id"]
+    options = kw["options"]
+    entity = await resolve_channel(client, channel)
+
+    # Просмотр
+    await client(GetMessagesViewsRequest(
+        peer=entity, id=[post_id], increment=True
+    ))
+    await human_delay(0.3, 1.0)
+
+    await client(SendVoteRequest(
+        peer=entity,
+        msg_id=post_id,
+        options=[bytes([o]) for o in options]
+    ))
+    await human_delay(0.5, 1.5)
+
+async def action_vote():
+    link = ask("Ссылка на пост с опросом: ")
+    parsed = parse_tg_link(link)
+    if not parsed["channel"] or not parsed["post_id"]:
+        print(f"{C.R}❌ Нужна ссылка на пост{C.RST}")
+        return
+    opts_str = ask("Номера вариантов через запятую (0,1,2...): ", "0")
+    try:
+        options = [int(x.strip()) for x in opts_str.split(",")]
+    except ValueError:
+        options = [0]
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_vote,
+        task_name="📊 Голосование",
+        channel=parsed["channel"],
+        post_id=parsed["post_id"],
+        options=options
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 8. INLINE КНОПКИ
+# ─────────────────────────────────────────────────────────────
+
+async def task_click_button(client, session_name, **kw):
+    channel = kw["channel"]
+    post_id = kw["post_id"]
+    button_idx = kw["button_idx"]
+    entity = await resolve_channel(client, channel)
+
+    msgs = await client.get_messages(entity, ids=post_id)
+    msg = msgs
+    if not msg or not msg.reply_markup:
+        return
+
+    buttons = []
+    if hasattr(msg.reply_markup, 'rows'):
+        for row in msg.reply_markup.rows:
+            for btn in row.buttons:
+                buttons.append(btn)
+
+    if button_idx >= len(buttons):
+        return
+
+    btn = buttons[button_idx]
+    if isinstance(btn, KeyboardButtonCallback):
+        await client(GetBotCallbackAnswerRequest(
+            peer=entity,
+            msg_id=post_id,
+            data=btn.data
+        ))
+    elif isinstance(btn, KeyboardButtonUrl):
+        pass  # URL кнопки просто открываем через просмотр
+    await human_delay(0.5, 1.5)
+
+async def action_click_button():
+    link = ask("Ссылка на пост с кнопками: ")
+    parsed = parse_tg_link(link)
+    if not parsed["channel"] or not parsed["post_id"]:
+        print(f"{C.R}❌ Нужна ссылка на пост{C.RST}")
+        return
+
+    # Показываем кнопки через первый аккаунт
+    sessions = get_sessions()
+    if not sessions:
+        print(f"{C.R}❌ Нет сессий{C.RST}")
+        return
+
+    proxies = load_proxies()
+    proxy = proxies[0] if proxies else None
+    client = await create_client(sessions[0], proxy)
+    await safe_connect(client, sessions[0])
+
+    try:
+        entity = await resolve_channel(client, parsed["channel"])
+        msg = await client.get_messages(entity, ids=parsed["post_id"])
+        if not msg or not msg.reply_markup:
+            print(f"{C.R}❌ Нет кнопок в этом посте{C.RST}")
+            return
+
+        buttons = []
+        if hasattr(msg.reply_markup, 'rows'):
+            for row in msg.reply_markup.rows:
+                for btn in row.buttons:
+                    buttons.append(btn)
+
+        print(f"\n{C.Y}  Кнопки в посте:{C.RST}")
+        for i, btn in enumerate(buttons):
+            btype = "callback" if isinstance(btn, KeyboardButtonCallback) else "url"
+            print(f"  {C.W}{i}. {btn.text} [{btype}]{C.RST}")
+
+    finally:
+        await client.disconnect()
+
+    button_idx = ask_int("Номер кнопки: ", 0)
+    sel_sessions = select_sessions()
+    if not sel_sessions:
+        return
+    await execute_on_sessions(
+        sel_sessions, task_click_button,
+        task_name="🔘 Клик по inline кнопке",
+        channel=parsed["channel"],
+        post_id=parsed["post_id"],
+        button_idx=button_idx
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 9. МАССОВАЯ РЕАКЦИЯ НА N ПОСТОВ
+# ─────────────────────────────────────────────────────────────
+
+async def task_mass_reaction(client, session_name, **kw):
+    channel = kw["channel"]
+    count = kw["count"]
+    reaction = kw["reaction"]
+    entity = await resolve_channel(client, channel)
+
+    messages = await client.get_messages(entity, limit=count)
+    react_obj = ReactionEmoji(emoticon=reaction)
+
+    for msg in messages:
+        if msg and msg.id:
+            try:
+                await client(GetMessagesViewsRequest(
+                    peer=entity, id=[msg.id], increment=True
+                ))
+                await client(SendReactionRequest(
+                    peer=entity, msg_id=msg.id,
+                    reaction=[react_obj]
+                ))
+                await human_delay(0.5, 1.5)
+            except Exception:
+                pass
+
+async def action_mass_reaction():
+    channel_link = ask("Канал (@username или ссылка): ")
+    parsed = parse_tg_link(channel_link)
+    if not parsed["channel"]:
+        print(f"{C.R}❌ Неверный канал{C.RST}")
+        return
+    count = ask_int("Количество последних постов: ", 10)
+    reaction = ask_reaction()
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_mass_reaction,
+        task_name=f"💥 Массовая реакция {reaction} на {count} постов",
+        channel=parsed["channel"],
+        count=count,
+        reaction=reaction
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 10. АВТО-СТАРТ БОТА + РЕФЕРАЛЬНАЯ ССЫЛКА
+# ─────────────────────────────────────────────────────────────
+
+async def task_start_bot(client, session_name, **kw):
+    bot = kw["bot"]
+    start_param = kw.get("start_param", "")
+
+    entity = await client.get_entity(bot)
+
+    if start_param:
+        await client(StartBotRequest(
+            bot=entity,
+            peer=entity,
+            start_param=start_param
+        ))
+    else:
+        await client.send_message(entity, "/start")
+    await human_delay(1.5, 3.0)
+
+async def action_start_bot():
+    link = ask("Ссылка на бота (t.me/bot?start=ref или @bot): ")
+    parsed = parse_tg_link(link)
+
+    bot = parsed.get("bot") or parsed.get("channel")
+    if not bot:
+        print(f"{C.R}❌ Неверная ссылка на бота{C.RST}")
+        return
+    start_param = parsed.get("start_param", "")
+    if not start_param:
+        start_param = ask("Start параметр (пусто = просто /start): ", "")
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_start_bot,
+        task_name="🤖 Старт бота",
+        bot=bot,
+        start_param=start_param
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 11. СЦЕНАРИЙ БОТА ИЗ JSON
+# ─────────────────────────────────────────────────────────────
+
+async def task_bot_scenario(client, session_name, **kw):
+    """
+    JSON формат:
+    {
+      "bot": "@botusername",
+      "steps": [
+        {"action": "send", "text": "/start"},
+        {"action": "wait", "seconds": 2},
+        {"action": "send", "text": "Hello"},
+        {"action": "click_button", "index": 0},
+        {"action": "wait", "seconds": 1}
+      ]
+    }
+    """
+    scenario = kw["scenario"]
+    bot = scenario["bot"]
+    entity = await client.get_entity(bot)
+
+    for step in scenario.get("steps", []):
+        action = step.get("action", "")
+        if action == "send":
+            await client.send_message(entity, step["text"])
+        elif action == "wait":
+            await asyncio.sleep(step.get("seconds", 1))
+        elif action == "click_button":
+            # Получаем последнее сообщение от бота
+            msgs = await client.get_messages(entity, limit=1)
+            if msgs and msgs[0].reply_markup:
+                buttons = []
+                for row in msgs[0].reply_markup.rows:
+                    for btn in row.buttons:
+                        buttons.append(btn)
+                idx = step.get("index", 0)
+                if idx < len(buttons) and isinstance(buttons[idx], KeyboardButtonCallback):
+                    await client(GetBotCallbackAnswerRequest(
+                        peer=entity,
+                        msg_id=msgs[0].id,
+                        data=buttons[idx].data
+                    ))
+        elif action == "start":
+            param = step.get("param", "")
+            if param:
+                await client(StartBotRequest(bot=entity, peer=entity, start_param=param))
+            else:
+                await client.send_message(entity, "/start")
+        await human_delay(0.5, 1.5)
+
+async def action_bot_scenario():
+    print(f"\n{C.Y}  Файлы сценариев в папке scenarios/:{C.RST}")
+    files = list(SCENARIOS_DIR.glob("*.json"))
+    if not files:
+        print(f"{C.R}  Нет JSON файлов в scenarios/{C.RST}")
+        print(f"{C.DIM}  Создай файл формата:")
+        print(f'  {{"bot":"@botname","steps":[{{"action":"send","text":"/start"}}]}}{C.RST}')
+        return
+    for i, f in enumerate(files, 1):
+        print(f"  {i}. {f.name}")
+    idx = ask_int("Номер файла: ", 1) - 1
+    if idx < 0 or idx >= len(files):
+        return
+
+    with open(files[idx]) as f:
+        scenario = json.load(f)
+
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_bot_scenario,
+        task_name="📋 Сценарий бота",
+        scenario=scenario
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 12. WEBAPP + STARTAPP
+# ─────────────────────────────────────────────────────────────
+
+async def task_webapp(client, session_name, **kw):
+    bot = kw["bot"]
+    startapp = kw.get("startapp", "")
+    url = kw.get("url", "")
+
+    entity = await client.get_entity(bot)
+
+    if startapp:
+        await client(StartBotRequest(
+            bot=entity, peer=entity, start_param=startapp
+        ))
+    await human_delay(1.0, 2.0)
+
+    # Запрос WebView если есть URL
+    if url:
+        try:
+            await client(RequestWebViewRequest(
+                peer=entity,
+                bot=entity,
+                url=url,
+                platform="android",
+            ))
         except Exception:
             pass
-    return user["stardom_level"]
+    await human_delay(1.0, 2.0)
 
-
-def get_nft_create_fee(user_id: int) -> int:
-    level = get_user_stardom(user_id)
-    if level > 0 and level in STARDOM_LEVELS:
-        return STARDOM_LEVELS[level]["nft_create_fee"]
-    return 20
-
-
-def get_nft_transfer_fee(user_id: int) -> int:
-    level = get_user_stardom(user_id)
-    if level > 0 and level in STARDOM_LEVELS:
-        return STARDOM_LEVELS[level]["nft_transfer_fee"]
-    return 20
-
-
-def get_gift_transfer_fee(user_id: int) -> int:
-    level = get_user_stardom(user_id)
-    if level > 0 and level in STARDOM_LEVELS:
-        return STARDOM_LEVELS[level]["gift_transfer_fee"]
-    return 15
-
-
-def grant_achievement(user_id: int, achievement_key: str) -> bool:
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT achievements FROM users WHERE user_id = ?", (user_id,))
-    row = c.fetchone()
-    if not row:
-        conn.close()
-        return False
-    try:
-        achievements = json.loads(row["achievements"])
-    except Exception:
-        achievements = []
-    if achievement_key in achievements:
-        conn.close()
-        return False
-    achievements.append(achievement_key)
-    c.execute(
-        "UPDATE users SET achievements = ? WHERE user_id = ?",
-        (json.dumps(achievements), user_id)
+async def action_webapp():
+    link = ask("Ссылка (t.me/bot?startapp=param или t.me/bot/app): ")
+    parsed = parse_tg_link(link)
+    bot = parsed.get("bot") or parsed.get("channel")
+    if not bot:
+        print(f"{C.R}❌ Неверная ссылка{C.RST}")
+        return
+    startapp = parsed.get("startapp", "")
+    if not startapp:
+        startapp = ask("Startapp параметр (пусто = без параметра): ")
+    url = ask("URL WebApp (пусто = пропустить): ")
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_webapp,
+        task_name="🌐 WebApp",
+        bot=bot, startapp=startapp, url=url
     )
-    conn.commit()
-    conn.close()
-    return True
 
+# ─────────────────────────────────────────────────────────────
+# 13. РАССЫЛКА В ЛС
+# ─────────────────────────────────────────────────────────────
 
-def get_user_achievements(user_id: int) -> list:
-    user = get_user(user_id)
-    if not user:
-        return []
-    try:
-        return json.loads(user["achievements"])
-    except Exception:
-        return []
+async def task_send_dm(client, session_name, **kw):
+    usernames = kw["usernames"]
+    message = kw["message"]
+    media_path = kw.get("media_path")
 
+    for username in usernames:
+        try:
+            entity = await client.get_entity(username)
+            if media_path and os.path.exists(media_path):
+                await client.send_file(entity, media_path, caption=message)
+            else:
+                await client.send_message(entity, message)
+            await human_delay(3.0, 8.0)
+        except Exception as e:
+            print(f"  {C.R}  ↳ {session_name} -> {username}: {e}{C.RST}")
 
-def generate_nft_characteristics(total_nfts: int = 1000):
-    model = random.choices(NFT_MODELS, weights=[m["chance"] for m in NFT_MODELS], k=1)[0]
-    pattern = random.choices(NFT_PATTERNS, weights=[p["chance"] for p in NFT_PATTERNS], k=1)[0]
-    bg = random.choices(NFT_BACKGROUNDS, weights=[b["chance"] for b in NFT_BACKGROUNDS], k=1)[0]
-    return model, pattern, bg
-
-
-async def send_notification(user_id: int, text: str):
-    try:
-        await bot.send_message(user_id, text)
-    except Exception as e:
-        logger.error(f"Ошибка отправки уведомления {user_id}: {e}")
-
-
-# ============================================================
-# REPLY КЛАВИАТУРА — с custom emoji в кнопках
-# ============================================================
-
-
-def get_main_keyboard() -> ReplyKeyboardMarkup:
-    """Главная reply-клавиатура."""
-    kb = ReplyKeyboardBuilder()
-    kb.row(
-        make_reply_button("Профиль", "profile"),
-        make_reply_button("Маркет", "market"),
-        make_reply_button("Маркет #2", "market2"),
-    )
-    kb.row(
-        make_reply_button("Торговля", "trade"),
-        make_reply_button("Крафт", "craft"),
-        make_reply_button("Stardom", "stardom"),
-    )
-    kb.row(
-        make_reply_button("Промокоды", "promo"),
-        make_reply_button("Топ", "trophy"),
-        make_reply_button("Друзья", "friends"),
-    )
-    return kb.as_markup(resize_keyboard=True)
-
-
-# ============================================================
-# MIDDLEWARE ДЛЯ ПРОВЕРКИ БАНА
-# ============================================================
-
-
-class BanCheckMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event, data):
-        user = None
-        if isinstance(event, Message) and event.from_user:
-            user = event.from_user
-        elif isinstance(event, CallbackQuery) and event.from_user:
-            user = event.from_user
-
-        if user:
-            ensure_user(user.id, user.username or "", user.first_name or "")
-            if is_banned(user.id):
-                user_data = get_user(user.id)
-                ban_text = (
-                    f"{pe('ban_emoji')} <b>Вы заблокированы!</b>\n\n"
-                    f"{pe('rules_emoji')} Причина: {user_data.get('ban_reason', 'Не указана')}\n"
-                    f"{pe('clock')} До: {user_data.get('ban_until', 'Бессрочно')}\n\n"
-                    f"{pe('appeal')} Подайте аппеляцию: /appeal <описание>"
-                )
-                if isinstance(event, Message):
-                    if event.text and event.text.startswith(("/appeal", "/rules")):
-                        return await handler(event, data)
-                    await event.answer(ban_text)
-                    return
-                elif isinstance(event, CallbackQuery):
-                    await event.answer("🚫 Вы заблокированы!", show_alert=True)
-                    return
-
-        return await handler(event, data)
-
-
-router.message.middleware(BanCheckMiddleware())
-router.callback_query.middleware(BanCheckMiddleware())
-
-
-# ============================================================
-# КОМАНДА ДЛЯ ПОЛУЧЕНИЯ CUSTOM EMOJI ID
-# ============================================================
-
-
-@router.message(Command("get_emoji"))
-async def cmd_get_emoji(message: Message):
-    """Отправь сообщение с premium emoji — бот покажет их ID."""
-    if not message.entities:
-        await message.answer(
-            f"{pe('info')} <b>Получение Custom Emoji ID</b>\n\n"
-            f"Отправьте сообщение с premium emoji боту,\n"
-            f"и он покажет их ID для настройки."
-        )
+async def action_send_dm():
+    print(f"{C.Y}  Введи юзернеймы (по одному на строку, пустая = конец):{C.RST}")
+    usernames = []
+    while True:
+        u = input("  @").strip().lstrip("@")
+        if not u:
+            break
+        usernames.append(u)
+    if not usernames:
+        # Или из файла
+        file_path = ask("Или путь к файлу с юзернеймами: ")
+        if file_path and os.path.exists(file_path):
+            with open(file_path) as f:
+                usernames = [l.strip().lstrip("@") for l in f if l.strip()]
+    if not usernames:
+        print(f"{C.R}❌ Нет юзернеймов{C.RST}")
+        return
+    message = ask("Сообщение: ")
+    media_path = ask("Путь к медиа (пусто = без медиа): ")
+    sessions = select_sessions()
+    if not sessions:
         return
 
-    text = f"{pe('info')} <b>Найденные Custom Emoji:</b>\n\n"
-    found = False
-    for ent in message.entities:
-        if ent.type == "custom_emoji":
-            text += f"• emoji-id: <code>{ent.custom_emoji_id}</code>\n"
-            found = True
+    # Распределяем юзернеймов по сессиям
+    chunk_size = max(1, len(usernames) // len(sessions))
+    chunks = [usernames[i:i+chunk_size] for i in range(0, len(usernames), chunk_size)]
 
-    if not found:
-        text += "Custom emoji не найдены в сообщении."
+    for i, session_name in enumerate(sessions):
+        if i >= len(chunks):
+            break
+        chunk = chunks[i]
+        proxies = load_proxies()
+        proxy = proxies[i % len(proxies)] if proxies else None
+        client = await create_client(session_name, proxy)
+        if not await safe_connect(client, session_name):
+            continue
+        try:
+            await task_send_dm(client, session_name,
+                             usernames=chunk, message=message,
+                             media_path=media_path if media_path else None)
+            print(f"  {C.G}✅ {session_name} — отправлено {len(chunk)} сообщ.{C.RST}")
+        except Exception as e:
+            print(f"  {C.R}❌ {session_name} — {e}{C.RST}")
+        finally:
+            await client.disconnect()
 
-    await message.answer(text)
+# ─────────────────────────────────────────────────────────────
+# 14. ИНВАЙТ
+# ─────────────────────────────────────────────────────────────
 
+async def task_invite(client, session_name, **kw):
+    target_channel = kw["target_channel"]
+    usernames = kw["usernames"]
 
-# ============================================================
-# ИНИЦИАЛИЗАЦИЯ БД ПРИ ЗАПУСКЕ
-# ============================================================
+    entity = await resolve_channel(client, target_channel)
 
-init_db()
+    for username in usernames:
+        try:
+            user = await client.get_entity(username)
+            await client(InviteToChannelRequest(
+                channel=entity,
+                users=[user]
+            ))
+            await human_delay(5.0, 15.0)
+        except FloodWaitError as e:
+            print(f"  {C.Y}  ↳ FloodWait {e.seconds}s{C.RST}")
+            if e.seconds < 60:
+                await asyncio.sleep(e.seconds)
+            else:
+                break
+        except Exception as e:
+            print(f"  {C.R}  ↳ {username}: {e}{C.RST}")
 
-# Конец части 1
-# ============================================================
-# ============================================================
-# ЧАСТЬ 2: Start, Профиль, Пополнение звёзд, Достижения, Друзья
-# ============================================================
-
-# ============================================================
-# КОМАНДА /start
-# ============================================================
-
-@router.message(CommandStart())
-async def cmd_start(message: Message):
-    user = message.from_user
-    ensure_user(user.id, user.username or "", user.first_name or "")
-
-    welcome_text = (
-        f"{pe('gift')} <b>Добро пожаловать в Gift Bot!</b> {pe('gift')}\n\n"
-        f"{pe('star')} Здесь вы можете:\n"
-        f"├ {pe('buy')} Покупать подарки\n"
-        f"├ {pe('nft')} Улучшать до NFT\n"
-        f"├ {pe('craft_btn')} Крафтить уникальные NFT\n"
-        f"├ {pe('trade')} Торговать на маркете\n"
-        f"├ {pe('stardom')} Получать Stardom статус\n"
-        f"├ {pe('rent')} Сдавать NFT в аренду\n"
-        f"├ {pe('auction')} Участвовать в аукционах\n"
-        f"└ {pe('friends')} Добавлять друзей\n\n"
-        f"{pe('rules_emoji')} Используйте кнопки ниже для навигации!\n"
-        f"{pe('info')} /help — все команды"
-    )
-    await message.answer(welcome_text, reply_markup=get_main_keyboard())
-
-
-# ============================================================
-# КОМАНДА /help
-# ============================================================
-
-@router.message(Command("help"))
-async def cmd_help(message: Message):
-    help_text = (
-        f"{pe('star')} <b>Команды пользователя:</b>\n\n"
-        f"{pe('rules_emoji')} /rules — Правила\n"
-        f"{pe('profile')} /help — Все команды\n\n"
-        f"<b>{pe('package')} Передача:</b>\n"
-        f"├ /transfer &lt;inv_id&gt; &lt;user_id&gt; — Передать подарок (15{pe('star')})\n"
-        f"└ /transfer_nft &lt;nft_id&gt; &lt;user_id&gt; — Передать NFT (20{pe('star')})\n\n"
-        f"<b>{pe('trade')} Торговля:</b>\n"
-        f"├ /trade &lt;nft_id&gt; &lt;цена&gt; — Выставить NFT на продажу\n"
-        f"└ /del_trade &lt;trade_id&gt; — Снять с продажи\n\n"
-        f"<b>{pe('house')} Аренда:</b>\n"
-        f"├ /nft_rental — Список аренд\n"
-        f"├ /nft_rents &lt;nft_id&gt; &lt;цена/час&gt; &lt;время_окончания&gt; — Сдать в аренду\n"
-        f"└ /rent_nft &lt;rental_id&gt; — Арендовать\n\n"
-        f"<b>{pe('auction')} Аукционы:</b>\n"
-        f"├ /auctions — Список аукционов\n"
-        f"└ /add_auc &lt;nft_id&gt; &lt;мин_ставка&gt; &lt;шаг&gt; &lt;дата_окончания&gt;\n\n"
-        f"<b>{pe('friends')} Друзья:</b>\n"
-        f"├ /add_friend &lt;user_id&gt; — Добавить друга\n"
-        f"├ /del_friend &lt;user_id&gt; — Удалить друга\n"
-        f"└ /friends — Список друзей\n\n"
-        f"<b>{pe('appeal')} Прочее:</b>\n"
-        f"├ /appeal &lt;текст&gt; — Аппеляция на бан\n"
-        f"└ /promo &lt;промокод&gt; — Активировать промокод\n"
-    )
-    await message.answer(help_text)
-
-
-# ============================================================
-# ПРОФИЛЬ
-# ============================================================
-
-@router.message(F.text.endswith("Профиль"))
-async def show_profile(message: Message):
-    user_id = message.from_user.id
-    user = get_user(user_id)
-    if not user:
-        ensure_user(user_id, message.from_user.username or "", message.from_user.first_name or "")
-        user = get_user(user_id)
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT COUNT(*) as cnt FROM inventory WHERE user_id = ?", (user_id,))
-    gift_count = c.fetchone()["cnt"]
-
-    c.execute("SELECT COUNT(*) as cnt FROM nfts WHERE owner_id = ?", (user_id,))
-    nft_count = c.fetchone()["cnt"]
-
-    c.execute("SELECT COUNT(*) as cnt FROM inventory WHERE user_id = ? AND is_limited = 1", (user_id,))
-    limited_count = c.fetchone()["cnt"]
-
-    conn.close()
-
-    stardom_level = get_user_stardom(user_id)
-    stardom_text = "Нет"
-    if stardom_level > 0 and stardom_level in STARDOM_LEVELS:
-        sd = STARDOM_LEVELS[stardom_level]
-        stardom_text = f"{sd['name']} (до {user.get('stardom_expires', '?')[:10]})"
-
-    achievements = get_user_achievements(user_id)
-    ach_count = len(achievements)
-    total_ach = len(ACHIEVEMENTS)
-
-    ban_status = ""
-    if user["is_buy_banned"]:
-        ban_status += f"\n{pe('ban_emoji')} Бан покупок: {user['buy_ban_reason']}"
-    if user["is_trade_banned"]:
-        ban_status += f"\n{pe('ban_emoji')} Бан торговли: {user['trade_ban_reason']}"
-
-    profile_text = (
-        f"{pe('profile')} <b>Ваш профиль</b>\n\n"
-        f"{pe('profile')} <b>{user['first_name']}</b> (@{user['username'] or 'нет'})\n"
-        f"{pe('id')} ID: <code>{user_id}</code>\n\n"
-        f"{pe('star')} Баланс: <b>{user['stars']} {pe('star')}</b>\n"
-        f"{pe('gift')} Подарков: <b>{gift_count}</b>\n"
-        f"{pe('nft')} NFT: <b>{nft_count}</b>\n"
-        f"{pe('limit')} Лимитированных: <b>{limited_count}</b>\n"
-        f"{pe('stardom')} Stardom: <b>{stardom_text}</b>\n"
-        f"{pe('achieve')} Достижения: <b>{ach_count}/{total_ach}</b>\n"
-        f"{ban_status}"
-    )
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Пополнить баланс", "topup_stars", "topup"))
-    kb.row(
-        make_inline_button("Инвентарь", "inventory_0", "inventory"),
-        make_inline_button("Мои NFT", "my_nfts_0", "nft")
-    )
-    kb.row(make_inline_button("Достижения", "achievements", "achieve"))
-    kb.row(make_inline_button("Улучшить до NFT", "show_upgradeable_0", "upgrade"))
-
-    await message.answer(profile_text, reply_markup=kb.as_markup())
-
-
-# ============================================================
-# ИНВЕНТАРЬ — ПАГИНАЦИЯ
-# ============================================================
-
-@router.callback_query(F.data.startswith("inventory_"))
-async def show_inventory(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    page = int(callback.data.split("_")[1])
-    per_page = 5
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "SELECT * FROM inventory WHERE user_id = ? ORDER BY inv_id DESC LIMIT ? OFFSET ?",
-        (user_id, per_page, page * per_page)
-    )
-    items = [dict(row) for row in c.fetchall()]
-    c.execute("SELECT COUNT(*) as cnt FROM inventory WHERE user_id = ?", (user_id,))
-    total = c.fetchone()["cnt"]
-    conn.close()
-
-    if not items and page == 0:
-        await callback.answer(f"{pe_plain('package')} Инвентарь пуст!", show_alert=True)
+async def action_invite():
+    target = ask("Канал/группа для инвайта (@username): ")
+    parsed = parse_tg_link(target)
+    if not parsed["channel"]:
+        print(f"{C.R}❌ Неверный канал{C.RST}")
+        return
+    print(f"{C.Y}  Юзернеймы для инвайта (по одному, пустая = конец):{C.RST}")
+    usernames = []
+    while True:
+        u = input("  @").strip().lstrip("@")
+        if not u:
+            break
+        usernames.append(u)
+    if not usernames:
+        file_path = ask("Файл с юзернеймами: ")
+        if file_path and os.path.exists(file_path):
+            with open(file_path) as f:
+                usernames = [l.strip().lstrip("@") for l in f if l.strip()]
+    if not usernames:
+        return
+    sessions = select_sessions()
+    if not sessions:
         return
 
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    text = f"{pe('inventory')} <b>Ваш инвентарь</b> (стр. {page + 1}/{total_pages}):\n\n"
+    chunk_size = max(1, len(usernames) // len(sessions))
+    chunks = [usernames[i:i+chunk_size] for i in range(0, len(usernames), chunk_size)]
 
-    for item in items:
-        nft_label = ""
-        if item["is_nft"]:
-            nft_label = f" {pe('nft')} NFT #{item['nft_id']}"
-        limited_label = ""
-        if item["is_limited"]:
-            limited_label = f" {pe('limit')} Лимит."
-        rarity_emoji = pe('common') if item["rarity"] == "common" else pe('rare')
-        text += (
-            f"{rarity_emoji} {item['gift_emoji']} <b>{item['gift_name']}</b>\n"
-            f"   {pe('id')} Inv ID: <code>{item['inv_id']}</code>{nft_label}{limited_label}\n\n"
+    for i, session_name in enumerate(sessions):
+        if i >= len(chunks):
+            break
+        proxies = load_proxies()
+        proxy = proxies[i % len(proxies)] if proxies else None
+        client = await create_client(session_name, proxy)
+        if not await safe_connect(client, session_name):
+            continue
+        try:
+            await task_invite(client, session_name,
+                            target_channel=parsed["channel"],
+                            usernames=chunks[i])
+        except Exception as e:
+            print(f"  {C.R}❌ {session_name} — {e}{C.RST}")
+        finally:
+            await client.disconnect()
+
+# ─────────────────────────────────────────────────────────────
+# 15. ОТПРАВКА С МЕДИА + MARKDOWN
+# ─────────────────────────────────────────────────────────────
+
+async def task_send_message(client, session_name, **kw):
+    target = kw["target"]
+    message = kw["message"]
+    media_path = kw.get("media_path")
+    parse_mode = kw.get("parse_mode", "md")
+
+    entity = await client.get_entity(target)
+
+    if media_path and os.path.exists(media_path):
+        await client.send_file(
+            entity, media_path,
+            caption=message,
+            parse_mode=parse_mode
         )
-
-    kb = InlineKeyboardBuilder()
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(make_inline_button("Назад", f"inventory_{page - 1}", "back"))
-    if (page + 1) * per_page < total:
-        nav_buttons.append(make_inline_button("Далее", f"inventory_{page + 1}", "next"))
-    if nav_buttons:
-        kb.row(*nav_buttons)
-    kb.row(make_inline_button("Назад к профилю", "back_profile", "back"))
-
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-# ============================================================
-# МОИ NFT — ПАГИНАЦИЯ
-# ============================================================
-
-@router.callback_query(F.data.startswith("my_nfts_"))
-async def show_my_nfts(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    page = int(callback.data.split("_")[2])
-    per_page = 3
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "SELECT * FROM nfts WHERE owner_id = ? ORDER BY nft_id DESC LIMIT ? OFFSET ?",
-        (user_id, per_page, page * per_page)
-    )
-    nfts = [dict(row) for row in c.fetchall()]
-    c.execute("SELECT COUNT(*) as cnt FROM nfts WHERE owner_id = ?", (user_id,))
-    total = c.fetchone()["cnt"]
-    conn.close()
-
-    if not nfts and page == 0:
-        await callback.answer(f"{pe_plain('nft')} У вас нет NFT!", show_alert=True)
-        return
-
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    text = f"{pe('nft')} <b>Ваши NFT</b> (стр. {page + 1}/{total_pages}):\n\n"
-
-    for nft in nfts:
-        crafted_label = f" {pe('hammer')} Крафт" if nft["is_crafted"] else ""
-        text += (
-            f"{'─' * 25}\n"
-            f"{nft['gift_emoji']} <b>{nft['gift_name']}</b> | NFT #{nft['nft_id']}{crafted_label}\n"
-            f"{pe('model')} Модель: <b>{nft['model_name']}</b> ({nft['model_chance']}%)\n"
-            f"{pe('pattern')} Узор: <b>{nft['pattern_name']}</b> ({nft['pattern_chance']}%)\n"
-            f"{pe('background')} Фон: <b>{nft['bg_name']}</b> ({nft['bg_chance']}%)\n"
-            f"{pe('date')} Создан: {nft['created_at'][:10]}\n\n"
-        )
-
-    kb = InlineKeyboardBuilder()
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(make_inline_button("Назад", f"my_nfts_{page - 1}", "back"))
-    if (page + 1) * per_page < total:
-        nav_buttons.append(make_inline_button("Далее", f"my_nfts_{page + 1}", "next"))
-    if nav_buttons:
-        kb.row(*nav_buttons)
-    kb.row(make_inline_button("Назад к профилю", "back_profile", "back"))
-
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-# ============================================================
-# НАЗАД К ПРОФИЛЮ
-# ============================================================
-
-@router.callback_query(F.data == "back_profile")
-async def back_to_profile(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    user = get_user(user_id)
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) as cnt FROM inventory WHERE user_id = ?", (user_id,))
-    gift_count = c.fetchone()["cnt"]
-    c.execute("SELECT COUNT(*) as cnt FROM nfts WHERE owner_id = ?", (user_id,))
-    nft_count = c.fetchone()["cnt"]
-    c.execute("SELECT COUNT(*) as cnt FROM inventory WHERE user_id = ? AND is_limited = 1", (user_id,))
-    limited_count = c.fetchone()["cnt"]
-    conn.close()
-
-    stardom_level = get_user_stardom(user_id)
-    stardom_text = "Нет"
-    if stardom_level > 0 and stardom_level in STARDOM_LEVELS:
-        sd = STARDOM_LEVELS[stardom_level]
-        stardom_text = f"{sd['name']} (до {user.get('stardom_expires', '?')[:10]})"
-
-    achievements = get_user_achievements(user_id)
-
-    ban_status = ""
-    if user["is_buy_banned"]:
-        ban_status += f"\n{pe('ban_emoji')} Бан покупок: {user['buy_ban_reason']}"
-    if user["is_trade_banned"]:
-        ban_status += f"\n{pe('ban_emoji')} Бан торговли: {user['trade_ban_reason']}"
-
-    profile_text = (
-        f"{pe('profile')} <b>Ваш профиль</b>\n\n"
-        f"{pe('profile')} <b>{user['first_name']}</b> (@{user['username'] or 'нет'})\n"
-        f"{pe('id')} ID: <code>{user_id}</code>\n\n"
-        f"{pe('star')} Баланс: <b>{user['stars']} {pe('star')}</b>\n"
-        f"{pe('gift')} Подарков: <b>{gift_count}</b>\n"
-        f"{pe('nft')} NFT: <b>{nft_count}</b>\n"
-        f"{pe('limit')} Лимитированных: <b>{limited_count}</b>\n"
-        f"{pe('stardom')} Stardom: <b>{stardom_text}</b>\n"
-        f"{pe('achieve')} Достижения: <b>{len(achievements)}/{len(ACHIEVEMENTS)}</b>\n"
-        f"{ban_status}"
-    )
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Пополнить баланс", "topup_stars", "topup"))
-    kb.row(
-        make_inline_button("Инвентарь", "inventory_0", "inventory"),
-        make_inline_button("Мои NFT", "my_nfts_0", "nft")
-    )
-    kb.row(make_inline_button("Достижения", "achievements", "achieve"))
-    kb.row(make_inline_button("Улучшить до NFT", "show_upgradeable_0", "upgrade"))
-
-    try:
-        await callback.message.edit_text(profile_text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-# ============================================================
-# ПОПОЛНЕНИЕ ЗВЁЗД
-# ============================================================
-
-@router.callback_query(F.data == "topup_stars")
-async def topup_stars_start(callback: CallbackQuery, state: FSMContext):
-    text = (
-        f"{pe('topup')} <b>Пополнение баланса</b>\n\n"
-        f"Выберите сумму или введите свою:\n"
-    )
-    kb = InlineKeyboardBuilder()
-    for amount in [50, 100, 250, 500, 1000]:
-        kb.button(text=f"{amount} {pe_plain('star')}", callback_data=f"topup_amount_{amount}")
-    kb.adjust(3)
-    kb.row(make_inline_button("Своя сумма", "topup_custom", "appeal"))
-    kb.row(make_inline_button("Назад", "back_profile", "back"))
-
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-
-
-@router.callback_query(F.data == "topup_custom")
-async def topup_custom(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(TopUpStates.waiting_amount)
-    await callback.message.edit_text(
-        f"{pe('topup')} <b>Введите сумму пополнения (мин. 1 {pe('star')}):</b>"
-    )
-    await callback.answer()
-
-
-@router.message(TopUpStates.waiting_amount)
-async def topup_custom_amount(message: Message, state: FSMContext):
-    try:
-        amount = int(message.text.strip())
-        if amount < 1:
-            await message.answer(f"{pe('cross')} Минимальная сумма — 1 {pe('star')}")
-            return
-        if amount > 10000:
-            await message.answer(f"{pe('cross')} Максимальная сумма — 10000 {pe('star')}")
-            return
-    except ValueError:
-        await message.answer(f"{pe('cross')} Введите число!")
-        return
-
-    await state.clear()
-    await send_stars_invoice(message, amount)
-
-
-@router.callback_query(F.data.startswith("topup_amount_"))
-async def topup_preset_amount(callback: CallbackQuery):
-    amount = int(callback.data.split("_")[2])
-    await callback.answer()
-    await send_stars_invoice(callback.message, amount, edit=True, user_id=callback.from_user.id)
-
-
-async def send_stars_invoice(message: Message, amount: int, edit: bool = False, user_id: int = None):
-    uid = user_id or message.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO payments (user_id, amount, status) VALUES (?, ?, 'pending')",
-        (uid, amount)
-    )
-    payment_db_id = c.lastrowid
-    conn.commit()
-    conn.close()
-
-    title = f"Пополнение на {amount} ⭐"
-    description = f"Пополнение баланса Gift Bot на {amount} звёзд"
-
-    try:
-        await bot.send_invoice(
-            chat_id=uid,
-            title=title,
-            description=description,
-            payload=f"topup_{payment_db_id}_{amount}",
-            provider_token="",
-            currency="XTR",
-            prices=[LabeledPrice(label=f"{amount} Stars", amount=amount)],
-            start_parameter=f"topup_{amount}"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка создания invoice: {e}")
-        await bot.send_message(uid, f"{pe('cross')} Ошибка создания платежа: {e}")
-
-
-# ============================================================
-# PRE-CHECKOUT
-# ============================================================
-
-@router.pre_checkout_query()
-async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-
-
-# ============================================================
-# УСПЕШНАЯ ОПЛАТА
-# ============================================================
-
-@router.message(F.successful_payment)
-async def process_successful_payment(message: Message):
-    payment = message.successful_payment
-    payload = payment.invoice_payload
-
-    if payload.startswith("topup_"):
-        parts = payload.split("_")
-        payment_db_id = int(parts[1])
-        amount = int(parts[2])
-        user_id = message.from_user.id
-
-        update_stars(user_id, amount)
-
-        conn = get_db()
-        c = conn.cursor()
-        c.execute(
-            "UPDATE payments SET status = 'completed', tg_payment_id = ? WHERE payment_id = ?",
-            (payment.telegram_payment_charge_id, payment_db_id)
-        )
-        conn.commit()
-        conn.close()
-
-        new_balance = get_stars(user_id)
-        await message.answer(
-            f"{pe('check')} <b>Оплата прошла успешно!</b>\n\n"
-            f"{pe('star')} Зачислено: <b>{amount} {pe('star')}</b>\n"
-            f"{pe('money')} Новый баланс: <b>{new_balance} {pe('star')}</b>"
-        )
-
-    elif payload.startswith("stardom_"):
-        parts = payload.split("_")
-        level = int(parts[1])
-        user_id = message.from_user.id
-        await activate_stardom(user_id, level)
-
-    elif payload.startswith("buy_gift_"):
-        parts = payload.split("_")
-        gift_id = int(parts[2])
-        target_id = int(parts[3])
-        buyer_id = message.from_user.id
-        await finalize_gift_purchase(buyer_id, target_id, gift_id, message)
-
-    elif payload.startswith("buy_limited_"):
-        parts = payload.split("_")
-        limit_id = int(parts[2])
-        target_id = int(parts[3])
-        buyer_id = message.from_user.id
-        await finalize_limited_purchase(buyer_id, target_id, limit_id, message)
-
-
-async def activate_stardom(user_id: int, level: int):
-    if level not in STARDOM_LEVELS:
-        return
-    sd = STARDOM_LEVELS[level]
-    expires = datetime.now() + timedelta(days=sd["duration_months"] * 30)
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "UPDATE users SET stardom_level = ?, stardom_expires = ? WHERE user_id = ?",
-        (level, expires.isoformat(), user_id)
-    )
-
-    counter = get_next_counter("gift_purchase_counter")
-    c.execute(
-        "INSERT INTO inventory (inv_id, user_id, gift_name, gift_emoji, rarity, is_nft, is_limited) "
-        "VALUES (?, ?, ?, ?, 'rare', 0, 0)",
-        (counter, user_id, sd["exclusive_gift"], sd["exclusive_emoji"])
-    )
-    conn.commit()
-    conn.close()
-
-    is_new = grant_achievement(user_id, "first_stardom")
-
-    text = (
-        f"{pe('stardom')} <b>Stardom активирован!</b>\n\n"
-        f"{pe('sparkles')} Уровень: <b>{sd['name']}</b>\n"
-        f"{pe('date')} Действует до: <b>{expires.strftime('%d.%m.%Y')}</b>\n"
-        f"{pe('gift')} Получен подарок: {sd['exclusive_emoji']} <b>{sd['exclusive_gift']}</b>\n\n"
-        f"{pe('sparkles')} Ваши привилегии:\n"
-        f"├ Комиссия создания NFT: {sd['nft_create_fee']} {pe('star')}\n"
-        f"├ Комиссия передачи NFT: {sd['nft_transfer_fee']} {pe('star')}\n"
-        f"└ Комиссия передачи подарка: {sd['gift_transfer_fee']} {pe('star')}"
-    )
-    if is_new:
-        text += f"\n\n{pe('achieve')} {pe('medal')} <b>Достижение разблокировано: Звёздный статус!</b>"
-
-    await send_notification(user_id, text)
-
-
-async def finalize_gift_purchase(buyer_id: int, target_id: int, gift_id: int, message: Message):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM gifts WHERE gift_id = ? AND is_active = 1", (gift_id,))
-    gift = c.fetchone()
-
-    if not gift:
-        conn.close()
-        await message.answer(f"{pe('cross')} Подарок не найден!")
-        return
-
-    gift = dict(gift)
-
-    if gift["quantity"] > 0 and gift["sold"] >= gift["quantity"]:
-        conn.close()
-        await message.answer(f"{pe('cross')} Подарок закончился!")
-        return
-
-    counter = get_next_counter("gift_purchase_counter")
-    c.execute(
-        "INSERT INTO inventory (inv_id, user_id, gift_id, gift_name, gift_emoji, rarity) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (counter, target_id, gift_id, gift["name"], gift["emoji"], gift["rarity"])
-    )
-
-    if gift["quantity"] > 0:
-        c.execute("UPDATE gifts SET sold = sold + 1 WHERE gift_id = ?", (gift_id,))
-
-    conn.commit()
-    conn.close()
-
-    is_new = grant_achievement(target_id, "first_gift")
-
-    buyer_text = (
-        f"{pe('check')} <b>Подарок куплен!</b>\n\n"
-        f"{gift['emoji']} <b>{gift['name']}</b>\n"
-        f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-    )
-    if target_id != buyer_id:
-        buyer_text += f"{pe('send')} Отправлен пользователю: <code>{target_id}</code>\n"
-    if is_new and target_id == buyer_id:
-        buyer_text += f"\n{pe('achieve')} {pe('medal')} <b>Достижение: Первый подарок!</b>"
-
-    await message.answer(buyer_text)
-
-    if target_id != buyer_id:
-        recv_text = (
-            f"{pe('gift')} <b>Вам подарили!</b>\n\n"
-            f"{gift['emoji']} <b>{gift['name']}</b>\n"
-            f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-            f"{pe('profile')} От: <code>{buyer_id}</code>"
-        )
-        if is_new:
-            recv_text += f"\n\n{pe('achieve')} {pe('medal')} <b>Достижение: Первый подарок!</b>"
-        await send_notification(target_id, recv_text)
-
-
-async def finalize_limited_purchase(buyer_id: int, target_id: int, limit_id: int, message: Message):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM limited_gifts WHERE limit_id = ? AND is_active = 1", (limit_id,))
-    lg = c.fetchone()
-
-    if not lg:
-        conn.close()
-        await message.answer(f"{pe('cross')} Лимитированный подарок не найден!")
-        return
-
-    lg = dict(lg)
-
-    try:
-        expires = datetime.fromisoformat(lg["expires_at"])
-        if datetime.now() > expires:
-            c.execute("UPDATE limited_gifts SET is_active = 0 WHERE limit_id = ?", (limit_id,))
-            conn.commit()
-            conn.close()
-            await message.answer(f"{pe('cross')} Лимитированный подарок истёк!")
-            return
-    except Exception:
-        pass
-
-    counter = get_next_counter("gift_purchase_counter")
-    c.execute(
-        "INSERT INTO inventory (inv_id, user_id, limit_id, gift_name, gift_emoji, rarity, is_limited) "
-        "VALUES (?, ?, ?, ?, ?, 'rare', 1)",
-        (counter, target_id, limit_id, lg["name"], lg["emoji"])
-    )
-    c.execute("UPDATE limited_gifts SET sold = sold + 1 WHERE limit_id = ?", (limit_id,))
-    conn.commit()
-    conn.close()
-
-    is_new = grant_achievement(target_id, "first_gift")
-
-    text = (
-        f"{pe('check')} <b>Лимитированный подарок куплен!</b>\n\n"
-        f"{pe('limit')} {lg['emoji']} <b>{lg['name']}</b> {pe('fire')}\n"
-        f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-    )
-    if target_id != buyer_id:
-        text += f"{pe('send')} Отправлен: <code>{target_id}</code>\n"
-    if is_new and target_id == buyer_id:
-        text += f"\n{pe('achieve')} {pe('medal')} <b>Достижение: Первый подарок!</b>"
-
-    await message.answer(text)
-
-    if target_id != buyer_id:
-        await send_notification(target_id,
-            f"{pe('gift')} <b>Вам подарили лимитированный подарок!</b>\n\n"
-            f"{lg['emoji']} <b>{lg['name']}</b>\n"
-            f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-            f"{pe('profile')} От: <code>{buyer_id}</code>"
-        )
-
-
-# ============================================================
-# ДОСТИЖЕНИЯ
-# ============================================================
-
-@router.callback_query(F.data == "achievements")
-async def show_achievements(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    user_achs = get_user_achievements(user_id)
-
-    text = f"{pe('achieve')} <b>Ваши достижения</b>\n\n"
-
-    for key, ach in ACHIEVEMENTS.items():
-        if key in user_achs:
-            text += f"{pe('check')} <b>{ach['name']}</b>\n   {ach['desc']}\n\n"
-        else:
-            text += f"{pe('lock')} <b>{ach['name']}</b>\n   {ach['desc']}\n\n"
-
-    text += f"\n{pe('leaderboard')} Разблокировано: <b>{len(user_achs)}/{len(ACHIEVEMENTS)}</b>"
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Назад", "back_profile", "back"))
-
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-# ============================================================
-# ДРУЗЬЯ
-# ============================================================
-
-@router.message(F.text.endswith("Друзья"))
-async def show_friends_menu(message: Message):
-    user_id = message.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        SELECT f.friend_id, u.first_name, u.username 
-        FROM friends f 
-        LEFT JOIN users u ON f.friend_id = u.user_id 
-        WHERE f.user_id = ?
-        ORDER BY f.added_at DESC
-    """, (user_id,))
-    friends_list = [dict(row) for row in c.fetchall()]
-    conn.close()
-
-    text = f"{pe('friends')} <b>Ваши друзья</b>\n\n"
-
-    if not friends_list:
-        text += f"{pe('package')} У вас пока нет друзей.\n\n"
-        text += f"Добавьте друга: /add_friend <ID>\n"
     else:
-        for i, fr in enumerate(friends_list, 1):
-            name = fr["first_name"] or "Неизвестный"
-            uname = f"@{fr['username']}" if fr["username"] else ""
-            text += f"{i}. {pe('profile')} <b>{name}</b> {uname}\n   {pe('id')} <code>{fr['friend_id']}</code>\n\n"
+        await client.send_message(
+            entity, message,
+            parse_mode=parse_mode
+        )
+    await human_delay(0.5, 1.5)
 
-    text += (
-        f"\n<b>Команды:</b>\n"
-        f"├ /add_friend &lt;ID&gt; — Добавить\n"
-        f"├ /del_friend &lt;ID&gt; — Удалить\n"
-        f"└ /send_friend &lt;friend_ID&gt; &lt;inv_id&gt; — Передать подарок другу"
+async def action_send_message():
+    target = ask("Куда отправить (@username/id): ")
+    message = ask("Сообщение (Markdown): ")
+    media_path = ask("Путь к файлу/фото (пусто = без медиа): ")
+    print(f"{C.Y}  Формат: 1=Markdown, 2=HTML{C.RST}")
+    fmt = ask_int("Формат: ", 1)
+    parse_mode = "md" if fmt == 1 else "html"
+
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_send_message,
+        task_name="📝 Отправка сообщения",
+        target=target, message=message,
+        media_path=media_path if media_path else None,
+        parse_mode=parse_mode
     )
 
-    kb = InlineKeyboardBuilder()
-    for fr in friends_list[:5]:
-        name = fr["first_name"] or "?"
-        kb.row(make_inline_button(f"Передать → {name}", f"friend_send_{fr['friend_id']}", "send"))
+# ─────────────────────────────────────────────────────────────
+# 16. ОТЛОЖЕННАЯ ОТПРАВКА
+# ─────────────────────────────────────────────────────────────
 
-    await message.answer(text, reply_markup=kb.as_markup() if friends_list else None)
+async def task_scheduled_send(client, session_name, **kw):
+    target = kw["target"]
+    message = kw["message"]
+    schedule_time = kw["schedule_time"]
 
+    entity = await client.get_entity(target)
+    await client.send_message(
+        entity, message,
+        schedule=schedule_time
+    )
 
-@router.message(Command("add_friend"))
-async def cmd_add_friend(message: Message, command: CommandObject):
-    user_id = message.from_user.id
+async def action_scheduled_send():
+    target = ask("Куда (@username): ")
+    message = ask("Сообщение: ")
+    minutes = ask_int("Через сколько минут: ", 5)
+    schedule_time = datetime.now() + timedelta(minutes=minutes)
+    print(f"{C.G}  Запланировано на: {schedule_time.strftime('%Y-%m-%d %H:%M:%S')}{C.RST}")
 
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /add_friend <ID пользователя>")
+    sessions = select_sessions()
+    if not sessions:
         return
+    await execute_on_sessions(
+        sessions, task_scheduled_send,
+        task_name="⏰ Отложенная отправка",
+        target=target, message=message,
+        schedule_time=schedule_time
+    )
 
-    try:
-        friend_id = int(command.args.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный ID!")
+# ─────────────────────────────────────────────────────────────
+# 17. РЕДАКТИРОВАНИЕ СООБЩЕНИЯ
+# ─────────────────────────────────────────────────────────────
+
+async def task_edit_message(client, session_name, **kw):
+    target = kw["target"]
+    msg_id = kw["msg_id"]
+    new_text = kw["new_text"]
+
+    entity = await client.get_entity(target)
+    await client.edit_message(entity, msg_id, new_text)
+
+async def action_edit_message():
+    target = ask("Канал/чат (@username): ")
+    msg_id = ask_int("ID сообщения: ")
+    new_text = ask("Новый текст: ")
+    sessions = select_sessions()
+    if not sessions:
         return
+    await execute_on_sessions(
+        sessions, task_edit_message,
+        task_name="✏️ Редактирование",
+        target=target, msg_id=msg_id, new_text=new_text
+    )
 
-    if friend_id == user_id:
-        await message.answer(f"{pe('cross')} Нельзя добавить себя в друзья!")
+# ─────────────────────────────────────────────────────────────
+# 18. ЗАКРЕП/ОТКРЕП
+# ─────────────────────────────────────────────────────────────
+
+async def task_pin_message(client, session_name, **kw):
+    target = kw["target"]
+    msg_id = kw["msg_id"]
+    unpin = kw.get("unpin", False)
+
+    entity = await client.get_entity(target)
+    await client.pin_message(entity, msg_id, notify=False)
+
+async def task_unpin_message(client, session_name, **kw):
+    target = kw["target"]
+    msg_id = kw.get("msg_id")
+    entity = await client.get_entity(target)
+    await client.unpin_message(entity, msg_id)
+
+async def action_pin_unpin():
+    target = ask("Канал/чат: ")
+    msg_id = ask_int("ID сообщения: ")
+    print(f"  1. Закрепить  2. Открепить")
+    choice = ask_int("Выбор: ", 1)
+    sessions = select_sessions()
+    if not sessions:
         return
-
-    friend = get_user(friend_id)
-    if not friend:
-        await message.answer(f"{pe('cross')} Пользователь не найден! Он должен сначала написать боту.")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    try:
-        c.execute(
-            "INSERT INTO friends (user_id, friend_id) VALUES (?, ?)",
-            (user_id, friend_id)
+    if choice == 1:
+        await execute_on_sessions(
+            sessions, task_pin_message,
+            task_name="📌 Закрепление",
+            target=target, msg_id=msg_id
         )
-        conn.commit()
-        conn.close()
-
-        await message.answer(
-            f"{pe('check')} <b>Друг добавлен!</b>\n\n"
-            f"{pe('profile')} {friend['first_name']} (ID: <code>{friend_id}</code>)"
-        )
-
-        await send_notification(friend_id,
-            f"{pe('friends')} <b>Вас добавили в друзья!</b>\n\n"
-            f"{pe('profile')} {message.from_user.first_name} (ID: <code>{user_id}</code>)\n"
-            f"Добавьте в ответ: /add_friend {user_id}"
-        )
-    except sqlite3.IntegrityError:
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот пользователь уже у вас в друзьях!")
-
-
-@router.message(Command("del_friend"))
-async def cmd_del_friend(message: Message, command: CommandObject):
-    user_id = message.from_user.id
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /del_friend <ID>")
-        return
-
-    try:
-        friend_id = int(command.args.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный ID!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("DELETE FROM friends WHERE user_id = ? AND friend_id = ?", (user_id, friend_id))
-    if c.rowcount > 0:
-        conn.commit()
-        conn.close()
-        await message.answer(f"{pe('check')} Друг (ID: <code>{friend_id}</code>) удалён!")
     else:
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот пользователь не в вашем списке друзей!")
-
-
-@router.message(Command("send_friend"))
-async def cmd_send_friend(message: Message, command: CommandObject):
-    user_id = message.from_user.id
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /send_friend <friend_ID> <inv_id>")
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Использование: /send_friend <friend_ID> <inv_id>")
-        return
-
-    try:
-        friend_id = int(parts[0])
-        inv_id = int(parts[1])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT id FROM friends WHERE user_id = ? AND friend_id = ?", (user_id, friend_id))
-    if not c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот пользователь не в вашем списке друзей!")
-        return
-    conn.close()
-
-    fee = get_gift_transfer_fee(user_id)
-    stars = get_stars(user_id)
-
-    if stars < fee:
-        await message.answer(f"{pe('cross')} Недостаточно звёзд! Нужно {fee} {pe('star')}, у вас {stars} {pe('star')}")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM inventory WHERE inv_id = ? AND user_id = ?", (inv_id, user_id))
-    item = c.fetchone()
-
-    if not item:
-        conn.close()
-        await message.answer(f"{pe('cross')} Подарок не найден в вашем инвентаре!")
-        return
-
-    item = dict(item)
-
-    c.execute("UPDATE inventory SET user_id = ? WHERE inv_id = ?", (friend_id, inv_id))
-    conn.commit()
-    conn.close()
-
-    update_stars(user_id, -fee)
-
-    new_balance = get_stars(user_id)
-    await message.answer(
-        f"{pe('check')} <b>Подарок передан другу!</b>\n\n"
-        f"{item['gift_emoji']} <b>{item['gift_name']}</b>\n"
-        f"{pe('send')} Получатель: <code>{friend_id}</code>\n"
-        f"{pe('money')} Комиссия: {fee} {pe('star')}\n"
-        f"{pe('money')} Баланс: {new_balance} {pe('star')}"
-    )
-
-    await send_notification(friend_id,
-        f"{pe('gift')} <b>Вы получили подарок от друга!</b>\n\n"
-        f"{item['gift_emoji']} <b>{item['gift_name']}</b>\n"
-        f"{pe('profile')} От: {message.from_user.first_name} (<code>{user_id}</code>)\n"
-        f"{pe('id')} Inv ID: <code>{inv_id}</code>"
-    )
-
-
-@router.callback_query(F.data.startswith("friend_send_"))
-async def friend_send_callback(callback: CallbackQuery, state: FSMContext):
-    friend_id = int(callback.data.split("_")[2])
-    await state.update_data(friend_target=friend_id)
-    await state.set_state(GiftBuyTarget.waiting_user_id)
-
-    await callback.message.answer(
-        f"{pe('send')} <b>Введите Inv ID подарка для передачи другу (ID: {friend_id}):</b>"
-    )
-    await callback.answer()
-
-
-@router.message(GiftBuyTarget.waiting_user_id)
-async def friend_send_inv_id(message: Message, state: FSMContext):
-    data = await state.get_data()
-    friend_id = data.get("friend_target")
-    await state.clear()
-
-    if not friend_id:
-        await message.answer(f"{pe('cross')} Ошибка! Попробуйте снова.")
-        return
-
-    try:
-        inv_id = int(message.text.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Введите число!")
-        return
-
-    user_id = message.from_user.id
-    fee = get_gift_transfer_fee(user_id)
-    stars = get_stars(user_id)
-
-    if stars < fee:
-        await message.answer(f"{pe('cross')} Недостаточно звёзд! Нужно {fee} {pe('star')}")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM inventory WHERE inv_id = ? AND user_id = ?", (inv_id, user_id))
-    item = c.fetchone()
-
-    if not item:
-        conn.close()
-        await message.answer(f"{pe('cross')} Подарок не найден в вашем инвентаре!")
-        return
-
-    item = dict(item)
-    c.execute("UPDATE inventory SET user_id = ? WHERE inv_id = ?", (friend_id, inv_id))
-    conn.commit()
-    conn.close()
-
-    update_stars(user_id, -fee)
-
-    await message.answer(
-        f"{pe('check')} <b>Подарок передан!</b>\n\n"
-        f"{item['gift_emoji']} <b>{item['gift_name']}</b> → <code>{friend_id}</code>\n"
-        f"{pe('money')} Комиссия: {fee} {pe('star')}"
-    )
-
-    await send_notification(friend_id,
-        f"{pe('gift')} <b>Вам передали подарок!</b>\n\n"
-        f"{item['gift_emoji']} <b>{item['gift_name']}</b>\n"
-        f"{pe('profile')} От: {message.from_user.first_name}\n"
-        f"{pe('id')} Inv ID: <code>{inv_id}</code>"
-    )
-
-
-# ============================================================
-# /rules
-# ============================================================
-
-@router.message(Command("rules"))
-async def cmd_rules(message: Message):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT text FROM rules WHERE id = 1")
-    row = c.fetchone()
-    conn.close()
-
-    rules_text = row["text"] if row else "Правила не установлены."
-
-    await message.answer(f"{pe('rules_emoji')} <b>Правила</b>\n\n{rules_text}")
-
-
-# ============================================================
-# /friends (альтернативный вызов)
-# ============================================================
-
-@router.message(Command("friends"))
-async def cmd_friends(message: Message):
-    message.text = f"{pe_plain('friends')} Друзья"
-    await show_friends_menu(message)
-
-
-# Конец части 2
-# ============================================================
-# ============================================================
-# ЧАСТЬ 3: Маркет #1, Маркет #2, Покупка, Лимитированные, Промокоды
-# ============================================================
-
-# ============================================================
-# МАРКЕТ #1 (COMMON подарки)
-# ============================================================
-
-@router.message(F.text.endswith("Маркет"))
-async def show_market1(message: Message):
-    if "#2" in message.text:
-        return
-
-    user_id = message.from_user.id
-    user = get_user(user_id)
-
-    if user and user["is_buy_banned"]:
-        await message.answer(
-            f"{pe('ban_emoji')} <b>Вам запрещено покупать подарки!</b>\n"
-            f"{pe('rules_emoji')} Причина: {user['buy_ban_reason']}"
-        )
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM gifts WHERE rarity = 'common' AND is_active = 1 ORDER BY gift_id")
-    gifts = [dict(row) for row in c.fetchall()]
-    conn.close()
-
-    if not gifts:
-        await message.answer(
-            f"{pe('market')} <b>Маркет</b>\n\n"
-            f"{pe('package')} В маркете пока нет подарков."
-        )
-        return
-
-    text = (
-        f"{pe('market')} <b>Маркет — Обычные подарки</b> {pe('common')}\n\n"
-        f"{pe('money')} Ваш баланс: <b>{user['stars']} {pe('star')}</b>\n\n"
-    )
-
-    kb = InlineKeyboardBuilder()
-
-    for gift in gifts:
-        qty_text = "∞" if gift["quantity"] == 0 else f"{gift['quantity'] - gift['sold']}/{gift['quantity']}"
-        text += (
-            f"{'─' * 25}\n"
-            f"{pe('common')} {gift['emoji']} <b>{gift['name']}</b>\n"
-            f"   {pe('money')} Цена: <b>{gift['price']} {pe('star')}</b>\n"
-            f"   {pe('package')} Осталось: <b>{qty_text}</b>\n"
-            f"   {pe('id')} ID: <code>{gift['gift_id']}</code>\n\n"
+        await execute_on_sessions(
+            sessions, task_unpin_message,
+            task_name="📌 Открепление",
+            target=target, msg_id=msg_id
         )
 
-        available = gift["quantity"] == 0 or gift["sold"] < gift["quantity"]
-        if available:
-            kb.row(make_inline_button(
-                f"Купить {gift['emoji']} {gift['name']} — {gift['price']}{pe_plain('star')}",
-                f"buy_common_{gift['gift_id']}", "buy"
+# ─────────────────────────────────────────────────────────────
+# 19. УДАЛИТЬ СВОИ СООБЩЕНИЯ
+# ─────────────────────────────────────────────────────────────
+
+async def task_delete_own_messages(client, session_name, **kw):
+    target = kw["target"]
+    limit = kw.get("limit", 100)
+
+    entity = await client.get_entity(target)
+    me = await client.get_me()
+
+    deleted = 0
+    async for msg in client.iter_messages(entity, limit=limit, from_user=me):
+        try:
+            await msg.delete()
+            deleted += 1
+            await human_delay(0.1, 0.3)
+        except Exception:
+            pass
+    print(f"  {C.DIM}  ↳ {session_name}: удалено {deleted}{C.RST}")
+
+async def action_delete_own():
+    target = ask("Канал/чат: ")
+    limit = ask_int("Макс. кол-во: ", 100)
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_delete_own_messages,
+        task_name="🗑 Удаление своих сообщений",
+        target=target, limit=limit
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 20. СОЗДАТЬ КАНАЛ/ГРУППУ
+# ─────────────────────────────────────────────────────────────
+
+async def task_create_channel(client, session_name, **kw):
+    title = kw["title"]
+    about = kw.get("about", "")
+    megagroup = kw.get("megagroup", False)
+
+    result = await client(CreateChannelRequest(
+        title=title,
+        about=about,
+        megagroup=megagroup
+    ))
+    channel = result.chats[0]
+    print(f"  {C.G}  ↳ {session_name}: создан {'группа' if megagroup else 'канал'} "
+          f"id={channel.id}{C.RST}")
+
+async def action_create_channel():
+    title = ask("Название: ")
+    about = ask("Описание: ", "")
+    print(f"  1. Канал  2. Группа (мегагруппа)")
+    ch = ask_int("Тип: ", 1)
+    megagroup = ch == 2
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_create_channel,
+        task_name="➕ Создание канала/группы",
+        title=title, about=about, megagroup=megagroup
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 21. НАСТРОЙКА КАНАЛА
+# ─────────────────────────────────────────────────────────────
+
+async def task_setup_channel(client, session_name, **kw):
+    target = kw["target"]
+    entity = await resolve_channel(client, target)
+    channel = await client.get_input_entity(entity)
+
+    new_title = kw.get("new_title")
+    new_about = kw.get("new_about")
+    new_username = kw.get("new_username")
+    photo_path = kw.get("photo_path")
+
+    if new_title:
+        await client(EditTitleRequest(channel=channel, title=new_title))
+    if new_about:
+        from telethon.tl.functions.channels import EditAboutRequest  # noqa
+        # Используем messages.editChatAbout через прямой вызов
+        await client(functions.messages.EditChatAboutRequest(
+            peer=entity, about=new_about
+        ))
+    if new_username:
+        await client(UpdateUsernameRequest(username=new_username))
+    if photo_path and os.path.exists(photo_path):
+        photo = await client.upload_file(photo_path)
+        await client(EditPhotoRequest(
+            channel=channel,
+            photo=types.InputChatUploadedPhoto(file=photo)
+        ))
+
+async def action_setup_channel():
+    target = ask("Канал (@username): ")
+    new_title = ask("Новое название (пусто = не менять): ")
+    new_about = ask("Новое описание (пусто = не менять): ")
+    new_username = ask("Новый username (пусто = не менять): ")
+    photo_path = ask("Путь к фото (пусто = не менять): ")
+
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_setup_channel,
+        task_name="⚙️ Настройка канала",
+        target=target,
+        new_title=new_title if new_title else None,
+        new_about=new_about if new_about else None,
+        new_username=new_username if new_username else None,
+        photo_path=photo_path if photo_path else None
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 22. НАЗНАЧИТЬ АДМИНА
+# ─────────────────────────────────────────────────────────────
+
+async def task_promote_admin(client, session_name, **kw):
+    target = kw["target"]
+    user = kw["user"]
+    rights = kw["rights"]
+
+    entity = await resolve_channel(client, target)
+    user_entity = await client.get_entity(user)
+
+    await client(EditAdminRequest(
+        channel=entity,
+        user_id=user_entity,
+        admin_rights=rights,
+        rank=kw.get("rank", "Admin")
+    ))
+
+async def action_promote_admin():
+    target = ask("Канал (@username): ")
+    user = ask("Юзер для назначения (@username): ")
+    rank = ask("Титул (Admin): ", "Admin")
+
+    print(f"\n{C.Y}  Выбери права:{C.RST}")
+    print(f"  1. Полные права")
+    print(f"  2. Только посты")
+    print(f"  3. Модератор (бан, удаление)")
+    print(f"  4. Кастомные")
+    ch = ask_int("Выбор: ", 1)
+
+    if ch == 1:
+        rights = ChatAdminRights(
+            change_info=True, post_messages=True, edit_messages=True,
+            delete_messages=True, ban_users=True, invite_users=True,
+            pin_messages=True, add_admins=True, manage_call=True
+        )
+    elif ch == 2:
+        rights = ChatAdminRights(post_messages=True, edit_messages=True)
+    elif ch == 3:
+        rights = ChatAdminRights(
+            delete_messages=True, ban_users=True, pin_messages=True
+        )
+    else:
+        print(f"  {C.DIM}Введи y/n для каждого права:{C.RST}")
+        rights = ChatAdminRights(
+            change_info=ask("change_info (y/n): ", "n") == "y",
+            post_messages=ask("post_messages (y/n): ", "n") == "y",
+            edit_messages=ask("edit_messages (y/n): ", "n") == "y",
+            delete_messages=ask("delete_messages (y/n): ", "n") == "y",
+            ban_users=ask("ban_users (y/n): ", "n") == "y",
+            invite_users=ask("invite_users (y/n): ", "n") == "y",
+            pin_messages=ask("pin_messages (y/n): ", "n") == "y",
+            add_admins=ask("add_admins (y/n): ", "n") == "y",
+            manage_call=ask("manage_call (y/n): ", "n") == "y",
+        )
+
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_promote_admin,
+        task_name="👑 Назначение админа",
+        target=target, user=user, rights=rights, rank=rank
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 23. МАССОВЫЙ БАН/КИК
+# ─────────────────────────────────────────────────────────────
+
+async def task_ban_users(client, session_name, **kw):
+    target = kw["target"]
+    usernames = kw["usernames"]
+    kick_only = kw.get("kick_only", False)
+
+    entity = await resolve_channel(client, target)
+
+    ban_rights = ChatBannedRights(
+        until_date=None if not kick_only else timedelta(seconds=30),
+        view_messages=True,
+        send_messages=True,
+        send_media=True
+    )
+
+    for username in usernames:
+        try:
+            user = await client.get_entity(username)
+            await client(EditBannedRequest(
+                channel=entity,
+                participant=user,
+                banned_rights=ban_rights
+            ))
+            if kick_only:
+                # Разбан через секунду (кик)
+                await asyncio.sleep(1)
+                await client(EditBannedRequest(
+                    channel=entity,
+                    participant=user,
+                    banned_rights=ChatBannedRights(until_date=None)
+                ))
+            await human_delay(0.3, 0.8)
+        except Exception as e:
+            print(f"  {C.R}  ↳ {username}: {e}{C.RST}")
+
+async def action_ban_kick():
+    target = ask("Канал/группа: ")
+    print(f"  1. Бан  2. Кик")
+    mode = ask_int("Режим: ", 1)
+    print(f"{C.Y}  Юзернеймы (по одному, пустая = конец):{C.RST}")
+    usernames = []
+    while True:
+        u = input("  @").strip().lstrip("@")
+        if not u:
+            break
+        usernames.append(u)
+    if not usernames:
+        file_path = ask("Файл: ")
+        if file_path and os.path.exists(file_path):
+            with open(file_path) as f:
+                usernames = [l.strip().lstrip("@") for l in f if l.strip()]
+    if not usernames:
+        return
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions[:1], task_ban_users,
+        task_name="🔨 Бан/кик",
+        target=target, usernames=usernames,
+        kick_only=(mode == 2)
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 24. ОЧИСТКА КАНАЛА
+# ─────────────────────────────────────────────────────────────
+
+async def task_clear_channel(client, session_name, **kw):
+    target = kw["target"]
+    entity = await resolve_channel(client, target)
+
+    deleted = 0
+    async for msg in client.iter_messages(entity, limit=None):
+        try:
+            await msg.delete()
+            deleted += 1
+            if deleted % 100 == 0:
+                print(f"  {C.DIM}  ↳ удалено {deleted}...{C.RST}")
+                await asyncio.sleep(0.5)
+        except Exception:
+            pass
+    print(f"  {C.G}  ↳ Всего удалено: {deleted}{C.RST}")
+
+async def action_clear_channel():
+    target = ask("Канал для очистки: ")
+    confirm = ask(f"⚠️ Удалить ВСЕ посты из {target}? (yes/no): ")
+    if confirm.lower() != "yes":
+        print(f"{C.Y}  Отменено{C.RST}")
+        return
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions[:1], task_clear_channel,
+        task_name="🧹 Очистка канала",
+        target=target
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 25. КОПИРОВАТЬ НАСТРОЙКИ КАНАЛА
+# ─────────────────────────────────────────────────────────────
+
+async def task_copy_channel(client, session_name, **kw):
+    source = kw["source"]
+    dest = kw["dest"]
+
+    src_entity = await resolve_channel(client, source)
+    dst_entity = await resolve_channel(client, dest)
+    dst_input = await client.get_input_entity(dst_entity)
+
+    full = await client(GetFullChannelRequest(src_entity))
+
+    # Копируем title
+    await client(EditTitleRequest(channel=dst_input, title=src_entity.title))
+    # Копируем about
+    if full.full_chat.about:
+        await client(functions.messages.EditChatAboutRequest(
+            peer=dst_entity, about=full.full_chat.about
+        ))
+    # Копируем фото
+    if src_entity.photo:
+        photo = await client.download_profile_photo(src_entity, file=bytes)
+        if photo:
+            uploaded = await client.upload_file(photo)
+            await client(EditPhotoRequest(
+                channel=dst_input,
+                photo=types.InputChatUploadedPhoto(file=uploaded)
             ))
 
-    await message.answer(text, reply_markup=kb.as_markup())
-
-
-# ============================================================
-# МАРКЕТ #2 (RARE подарки + лимитированные)
-# ============================================================
-
-@router.message(F.text.endswith("Маркет #2"))
-async def show_market2(message: Message):
-    user_id = message.from_user.id
-    user = get_user(user_id)
-
-    if user and user["is_buy_banned"]:
-        await message.answer(
-            f"{pe('ban_emoji')} <b>Вам запрещено покупать подарки!</b>\n"
-            f"{pe('rules_emoji')} Причина: {user['buy_ban_reason']}"
-        )
+async def action_copy_channel():
+    source = ask("Исходный канал (@source): ")
+    dest = ask("Целевой канал (@dest): ")
+    sessions = select_sessions()
+    if not sessions:
         return
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT * FROM gifts WHERE rarity = 'rare' AND is_active = 1 ORDER BY gift_id")
-    rare_gifts = [dict(row) for row in c.fetchall()]
-
-    c.execute("SELECT * FROM limited_gifts WHERE is_active = 1 ORDER BY limit_id")
-    limited_raw = [dict(row) for row in c.fetchall()]
-    conn.close()
-
-    limited_gifts = []
-    now = datetime.now()
-    for lg in limited_raw:
-        try:
-            expires = datetime.fromisoformat(lg["expires_at"])
-            if now <= expires:
-                limited_gifts.append(lg)
-            else:
-                conn2 = get_db()
-                conn2.execute("UPDATE limited_gifts SET is_active = 0 WHERE limit_id = ?", (lg["limit_id"],))
-                conn2.commit()
-                conn2.close()
-        except Exception:
-            limited_gifts.append(lg)
-
-    if not rare_gifts and not limited_gifts:
-        await message.answer(
-            f"{pe('market2')} <b>Маркет #2</b>\n\n"
-            f"{pe('package')} В маркете пока нет редких подарков."
-        )
-        return
-
-    text = (
-        f"{pe('market2')} <b>Маркет #2 — Редкие подарки</b> {pe('rare')}\n\n"
-        f"{pe('money')} Ваш баланс: <b>{user['stars']} {pe('star')}</b>\n\n"
+    await execute_on_sessions(
+        sessions[:1], task_copy_channel,
+        task_name="📋 Копирование настроек",
+        source=source, dest=dest
     )
 
-    kb = InlineKeyboardBuilder()
+# ─────────────────────────────────────────────────────────────
+# 26. РЕПОРТ НА ЮЗЕРА/КАНАЛ
+# ─────────────────────────────────────────────────────────────
 
-    if rare_gifts:
-        text += f"<b>{pe('rare')} Редкие подарки:</b>\n\n"
-        for gift in rare_gifts:
-            qty_text = "∞" if gift["quantity"] == 0 else f"{gift['quantity'] - gift['sold']}/{gift['quantity']}"
-            text += (
-                f"{'─' * 25}\n"
-                f"{pe('rare')} {gift['emoji']} <b>{gift['name']}</b>\n"
-                f"   {pe('money')} Цена: <b>{gift['price']} {pe('star')}</b>\n"
-                f"   {pe('package')} Осталось: <b>{qty_text}</b>\n"
-                f"   {pe('id')} ID: <code>{gift['gift_id']}</code>\n"
-                f"   {pe('upgrade')} Можно улучшить до NFT!\n\n"
-            )
+REPORT_REASONS = {
+    1: ("Спам", InputReportReasonSpam()),
+    2: ("Насилие", InputReportReasonViolence()),
+    3: ("Порнография", InputReportReasonPornography()),
+    4: ("Детское насилие", InputReportReasonChildAbuse()),
+    5: ("Наркотики", InputReportReasonIllegalDrugs()),
+    6: ("Фейк", InputReportReasonFake()),
+    7: ("Геонерелевант", InputReportReasonGeoIrrelevant()),
+    8: ("Другое", InputReportReasonOther()),
+}
 
-            available = gift["quantity"] == 0 or gift["sold"] < gift["quantity"]
-            if available:
-                kb.row(make_inline_button(
-                    f"Купить {gift['emoji']} {gift['name']} — {gift['price']}{pe_plain('star')}",
-                    f"buy_rare_{gift['gift_id']}", "buy"
+async def task_report_channel(client, session_name, **kw):
+    target = kw["target"]
+    reason = kw["reason"]
+    message = kw.get("message", "")
+
+    entity = await resolve_channel(client, target)
+
+    # Получаем последние сообщения для репорта
+    msgs = await client.get_messages(entity, limit=5)
+    msg_ids = [m.id for m in msgs if m]
+
+    if msg_ids:
+        await client(ReportRequest(
+            peer=entity,
+            id=msg_ids,
+            reason=reason,
+            message=message
+        ))
+    await human_delay(1.0, 2.0)
+
+async def action_report_channel():
+    target = ask("Канал/юзер для репорта: ")
+    print(f"\n{C.Y}  Причины:{C.RST}")
+    for k, (name, _) in REPORT_REASONS.items():
+        print(f"  {k}. {name}")
+    reason_idx = ask_int("Причина: ", 1)
+    reason = REPORT_REASONS.get(reason_idx, REPORT_REASONS[8])[1]
+    message = ask("Комментарий к репорту: ", "")
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_report_channel,
+        task_name="🚨 Репорт",
+        target=target, reason=reason, message=message
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 27. РЕПОРТ НА СООБЩЕНИЕ
+# ─────────────────────────────────────────────────────────────
+
+async def task_report_message(client, session_name, **kw):
+    channel = kw["channel"]
+    post_id = kw["post_id"]
+    reason = kw["reason"]
+    message = kw.get("message", "")
+
+    entity = await resolve_channel(client, channel)
+    await client(ReportRequest(
+        peer=entity,
+        id=[post_id],
+        reason=reason,
+        message=message
+    ))
+    await human_delay(1.0, 2.0)
+
+async def action_report_message():
+    link = ask("Ссылка на сообщение: ")
+    parsed = parse_tg_link(link)
+    if not parsed["channel"] or not parsed["post_id"]:
+        print(f"{C.R}❌ Нужна ссылка на конкретное сообщение{C.RST}")
+        return
+    print(f"\n{C.Y}  Причины:{C.RST}")
+    for k, (name, _) in REPORT_REASONS.items():
+        print(f"  {k}. {name}")
+    reason_idx = ask_int("Причина: ", 1)
+    reason = REPORT_REASONS.get(reason_idx, REPORT_REASONS[8])[1]
+    message = ask("Комментарий: ", "")
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_report_message,
+        task_name="🚨 Репорт на сообщение",
+        channel=parsed["channel"],
+        post_id=parsed["post_id"],
+        reason=reason, message=message
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 28. МАССОВАЯ БЛОКИРОВКА
+# ─────────────────────────────────────────────────────────────
+
+async def task_block_user(client, session_name, **kw):
+    usernames = kw["usernames"]
+    for username in usernames:
+        try:
+            user = await client.get_entity(username)
+            await client(functions.contacts.BlockRequest(id=user))
+            await human_delay(0.3, 0.8)
+        except Exception as e:
+            print(f"  {C.R}  ↳ {username}: {e}{C.RST}")
+
+async def action_block_users():
+    print(f"{C.Y}  Юзернеймы для блокировки (пустая = конец):{C.RST}")
+    usernames = []
+    while True:
+        u = input("  @").strip().lstrip("@")
+        if not u:
+            break
+        usernames.append(u)
+    if not usernames:
+        return
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_block_user,
+        task_name="🚫 Массовая блокировка",
+        usernames=usernames
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 29. ПАРСЕР УЧАСТНИКОВ
+# ─────────────────────────────────────────────────────────────
+
+async def action_parse_members():
+    target = ask("Канал/группа: ")
+    parsed = parse_tg_link(target)
+    if not parsed["channel"]:
+        print(f"{C.R}❌ Неверный канал{C.RST}")
+        return
+    limit = ask_int("Макс. кол-во: ", 1000)
+
+    sessions = get_sessions()
+    if not sessions:
+        print(f"{C.R}❌ Нет сессий{C.RST}")
+        return
+
+    proxies = load_proxies()
+    proxy = proxies[0] if proxies else None
+    client = await create_client(sessions[0], proxy)
+    if not await safe_connect(client, sessions[0]):
+        return
+
+    try:
+        entity = await resolve_channel(client, parsed["channel"])
+        members = []
+        offset = 0
+        batch = 200
+
+        while len(members) < limit:
+            participants = await client(GetParticipantsRequest(
+                channel=entity,
+                filter=ChannelParticipantsSearch(""),
+                offset=offset,
+                limit=min(batch, limit - len(members)),
+                hash=0
+            ))
+            if not participants.users:
+                break
+            for user in participants.users:
+                info = {
+                    "id": user.id,
+                    "username": user.username or "",
+                    "first_name": user.first_name or "",
+                    "last_name": user.last_name or "",
+                    "phone": user.phone or "",
+                    "bot": user.bot,
+                }
+                members.append(info)
+            offset += len(participants.users)
+            if len(participants.users) < batch:
+                break
+
+        # Сохраняем
+        filename = f"members_{parsed['channel']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(members, f, ensure_ascii=False, indent=2)
+
+        # Также txt с юзернеймами
+        txt_file = filename.replace(".json", ".txt")
+        with open(txt_file, "w") as f:
+            for m in members:
+                if m["username"]:
+                    f.write(f"@{m['username']}\n")
+
+        print(f"\n{C.G}✅ Спарсено: {len(members)} участников{C.RST}")
+        print(f"  JSON: {filename}")
+        print(f"  TXT:  {txt_file}")
+
+    finally:
+        await client.disconnect()
+
+# ─────────────────────────────────────────────────────────────
+# 30. СТАТИСТИКА КАНАЛА
+# ─────────────────────────────────────────────────────────────
+
+async def action_channel_stats():
+    target = ask("Канал: ")
+    parsed = parse_tg_link(target)
+    if not parsed["channel"]:
+        return
+
+    sessions = get_sessions()
+    if not sessions:
+        return
+
+    proxies = load_proxies()
+    proxy = proxies[0] if proxies else None
+    client = await create_client(sessions[0], proxy)
+    if not await safe_connect(client, sessions[0]):
+        return
+
+    try:
+        entity = await resolve_channel(client, parsed["channel"])
+        full = await client(GetFullChannelRequest(entity))
+
+        print(f"\n{C.CY}{'═'*50}")
+        print(f"  📊 Статистика: {entity.title}")
+        print(f"{'═'*50}{C.RST}")
+        print(f"  ID:           {entity.id}")
+        print(f"  Username:     @{entity.username or 'нет'}")
+        print(f"  Подписчики:   {format_count(full.full_chat.participants_count or 0)}")
+        print(f"  Описание:     {(full.full_chat.about or '')[:100]}")
+        print(f"  Создатель:    {'Да' if entity.creator else 'Нет'}")
+        print(f"  Мегагруппа:   {'Да' if entity.megagroup else 'Нет'}")
+
+        # Последние посты
+        msgs = await client.get_messages(entity, limit=10)
+        if msgs:
+            total_views = sum(m.views or 0 for m in msgs)
+            avg_views = total_views // len(msgs) if msgs else 0
+            print(f"  Ср. просмотры: {format_count(avg_views)} (10 постов)")
+
+        print(f"{C.CY}{'═'*50}{C.RST}")
+    finally:
+        await client.disconnect()
+
+# ─────────────────────────────────────────────────────────────
+# 31. СКАЧИВАНИЕ МЕДИА
+# ─────────────────────────────────────────────────────────────
+
+async def action_download_media():
+    link = ask("Ссылка на пост или канал: ")
+    parsed = parse_tg_link(link)
+    if not parsed["channel"]:
+        return
+
+    limit = 1
+    if parsed["post_id"]:
+        limit = 1
+    else:
+        limit = ask_int("Кол-во последних постов: ", 10)
+
+    output_dir = ask("Папка для сохранения: ", "downloads")
+    os.makedirs(output_dir, exist_ok=True)
+
+    sessions = get_sessions()
+    if not sessions:
+        return
+
+    proxies = load_proxies()
+    proxy = proxies[0] if proxies else None
+    client = await create_client(sessions[0], proxy)
+    if not await safe_connect(client, sessions[0]):
+        return
+
+    try:
+        entity = await resolve_channel(client, parsed["channel"])
+        downloaded = 0
+
+        if parsed["post_id"]:
+            msg = await client.get_messages(entity, ids=parsed["post_id"])
+            if msg and msg.media:
+                path = await client.download_media(msg, file=output_dir)
+                print(f"  {C.G}📥 {path}{C.RST}")
+                downloaded += 1
+        else:
+            async for msg in client.iter_messages(entity, limit=limit):
+                if msg.media:
+                    try:
+                        path = await client.download_media(msg, file=output_dir)
+                        print(f"  {C.G}📥 {path}{C.RST}")
+                        downloaded += 1
+                    except Exception:
+                        pass
+
+        print(f"\n{C.G}✅ Скачано: {downloaded} файлов{C.RST}")
+    finally:
+        await client.disconnect()
+
+# ─────────────────────────────────────────────────────────────
+# 32. МОНИТОРИНГ (авто-реакции на новые посты)
+# ─────────────────────────────────────────────────────────────
+
+async def action_monitor():
+    target = ask("Канал для мониторинга: ")
+    parsed = parse_tg_link(target)
+    if not parsed["channel"]:
+        return
+    reaction = ask_reaction()
+    do_view = ask("Автопросмотр? (y/n): ", "y") == "y"
+
+    sessions = get_sessions()
+    if not sessions:
+        return
+
+    print(f"\n{C.G}👀 Мониторинг запущен. Ctrl+C для остановки{C.RST}")
+
+    proxies = load_proxies()
+    proxy = proxies[0] if proxies else None
+    client = await create_client(sessions[0], proxy)
+    if not await safe_connect(client, sessions[0]):
+        return
+
+    try:
+        entity = await resolve_channel(client, parsed["channel"])
+
+        @client.on(events.NewMessage(chats=entity))
+        async def handler(event):
+            msg = event.message
+            print(f"  {C.CY}📨 Новый пост #{msg.id}{C.RST}")
+
+            if do_view:
+                await client(GetMessagesViewsRequest(
+                    peer=entity, id=[msg.id], increment=True
                 ))
 
-    if limited_gifts:
-        text += f"\n<b>{pe('limit')} Лимитированные подарки:</b>\n\n"
-        for lg in limited_gifts:
+            react_obj = ReactionEmoji(emoticon=reaction)
             try:
-                exp_dt = datetime.fromisoformat(lg["expires_at"])
-                time_left = exp_dt - now
-                hours_left = int(time_left.total_seconds() // 3600)
-                mins_left = int((time_left.total_seconds() % 3600) // 60)
-                time_str = f"{hours_left}ч {mins_left}м"
-            except Exception:
-                time_str = "Неизвестно"
+                await client(SendReactionRequest(
+                    peer=entity, msg_id=msg.id,
+                    reaction=[react_obj]
+                ))
+                print(f"  {C.G}  ✅ Реакция {reaction} поставлена{C.RST}")
+            except Exception as e:
+                print(f"  {C.R}  ❌ {e}{C.RST}")
 
-            text += (
-                f"{'─' * 25}\n"
-                f"{pe('limit')} {lg['emoji']} <b>{lg['name']}</b> {pe('fire')} ЛИМИТИРОВАННЫЙ\n"
-                f"   {pe('money')} Цена: <b>{lg['price']} {pe('star')}</b>\n"
-                f"   {pe('clock')} Осталось: <b>{time_str}</b>\n"
-                f"   {pe('leaderboard')} Продано: <b>{lg['sold']}</b>\n"
-                f"   {pe('id')} Limit ID: <code>{lg['limit_id']}</code>\n\n"
-            )
+        await client.run_until_disconnected()
+    except KeyboardInterrupt:
+        print(f"\n{C.Y}⏹ Мониторинг остановлен{C.RST}")
+    finally:
+        await client.disconnect()
 
-            kb.row(make_inline_button(
-                f"Купить {lg['emoji']} {lg['name']} — {lg['price']}{pe_plain('star')}",
-                f"buy_limited_{lg['limit_id']}", "limit"
-            ))
+# ─────────────────────────────────────────────────────────────
+# 33. АВТО-ОТВЕТЧИК ПО КЛЮЧЕВЫМ СЛОВАМ
+# ─────────────────────────────────────────────────────────────
 
-    await message.answer(text, reply_markup=kb.as_markup())
+async def action_auto_responder():
+    print(f"{C.Y}  Введи пары: ключевое_слово -> ответ (пустая = конец):{C.RST}")
+    rules = {}
+    while True:
+        keyword = ask("Ключевое слово: ")
+        if not keyword:
+            break
+        response = ask("Ответ: ")
+        rules[keyword.lower()] = response
 
-
-# ============================================================
-# ПОКУПКА COMMON — ВЫБОР ПОЛУЧАТЕЛЯ
-# ============================================================
-
-@router.callback_query(F.data.startswith("buy_common_"))
-async def buy_common_start(callback: CallbackQuery):
-    gift_id = int(callback.data.split("_")[2])
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM gifts WHERE gift_id = ? AND is_active = 1", (gift_id,))
-    gift = c.fetchone()
-    conn.close()
-
-    if not gift:
-        await callback.answer(f"{pe_plain('cross')} Подарок не найден!", show_alert=True)
+    if not rules:
+        print(f"{C.R}❌ Нет правил{C.RST}")
         return
 
-    gift = dict(gift)
-
-    if gift["quantity"] > 0 and gift["sold"] >= gift["quantity"]:
-        await callback.answer(f"{pe_plain('cross')} Подарок закончился!", show_alert=True)
+    sessions = get_sessions()
+    if not sessions:
         return
 
-    user = get_user(callback.from_user.id)
-    if user and user["is_buy_banned"]:
-        await callback.answer(f"{pe_plain('ban_emoji')} Вам запрещено покупать!", show_alert=True)
-        return
+    print(f"\n{C.G}🤖 Авто-ответчик запущен. Ctrl+C для остановки{C.RST}")
+    print(f"  Правила: {len(rules)}")
 
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Купить себе", f"buy_self_common_{gift_id}", "gift"))
-    kb.row(make_inline_button("Купить кому-то (по ID)", f"buy_other_common_{gift_id}", "send"))
-    kb.row(make_inline_button("Отмена", "cancel_buy", "cross"))
-
-    await callback.message.edit_text(
-        f"{pe('buy')} <b>Покупка подарка</b>\n\n"
-        f"{gift['emoji']} <b>{gift['name']}</b>\n"
-        f"{pe('money')} Цена: <b>{gift['price']} {pe('star')}</b>\n\n"
-        f"Кому купить?",
-        reply_markup=kb.as_markup()
-    )
-
-
-# ============================================================
-# ПОКУПКА RARE — ВЫБОР ПОЛУЧАТЕЛЯ
-# ============================================================
-
-@router.callback_query(F.data.startswith("buy_rare_"))
-async def buy_rare_start(callback: CallbackQuery):
-    gift_id = int(callback.data.split("_")[2])
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM gifts WHERE gift_id = ? AND is_active = 1", (gift_id,))
-    gift = c.fetchone()
-    conn.close()
-
-    if not gift:
-        await callback.answer(f"{pe_plain('cross')} Подарок не найден!", show_alert=True)
-        return
-
-    gift = dict(gift)
-
-    if gift["quantity"] > 0 and gift["sold"] >= gift["quantity"]:
-        await callback.answer(f"{pe_plain('cross')} Подарок закончился!", show_alert=True)
-        return
-
-    user = get_user(callback.from_user.id)
-    if user and user["is_buy_banned"]:
-        await callback.answer(f"{pe_plain('ban_emoji')} Вам запрещено покупать!", show_alert=True)
-        return
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Купить себе", f"buy_self_rare_{gift_id}", "gift"))
-    kb.row(make_inline_button("Купить кому-то (по ID)", f"buy_other_rare_{gift_id}", "send"))
-    kb.row(make_inline_button("Отмена", "cancel_buy", "cross"))
-
-    await callback.message.edit_text(
-        f"{pe('buy')} <b>Покупка редкого подарка</b>\n\n"
-        f"{pe('rare')} {gift['emoji']} <b>{gift['name']}</b>\n"
-        f"{pe('money')} Цена: <b>{gift['price']} {pe('star')}</b>\n\n"
-        f"Кому купить?",
-        reply_markup=kb.as_markup()
-    )
-
-
-# ============================================================
-# ПОКУПКА ЛИМИТИРОВАННОГО — ВЫБОР ПОЛУЧАТЕЛЯ
-# ============================================================
-
-@router.callback_query(F.data.startswith("buy_limited_"))
-async def buy_limited_start(callback: CallbackQuery):
-    limit_id = int(callback.data.split("_")[2])
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM limited_gifts WHERE limit_id = ? AND is_active = 1", (limit_id,))
-    lg = c.fetchone()
-    conn.close()
-
-    if not lg:
-        await callback.answer(f"{pe_plain('cross')} Подарок не найден!", show_alert=True)
-        return
-
-    lg = dict(lg)
-
-    try:
-        expires = datetime.fromisoformat(lg["expires_at"])
-        if datetime.now() > expires:
-            await callback.answer(f"{pe_plain('cross')} Лимитированный подарок истёк!", show_alert=True)
-            return
-    except Exception:
-        pass
-
-    user = get_user(callback.from_user.id)
-    if user and user["is_buy_banned"]:
-        await callback.answer(f"{pe_plain('ban_emoji')} Вам запрещено покупать!", show_alert=True)
+    proxies = load_proxies()
+    proxy = proxies[0] if proxies else None
+    client = await create_client(sessions[0], proxy)
+    if not await safe_connect(client, sessions[0]):
         return
 
     try:
-        exp_dt = datetime.fromisoformat(lg["expires_at"])
-        time_left = exp_dt - datetime.now()
-        hours_left = int(time_left.total_seconds() // 3600)
-        time_str = f"{hours_left}ч"
-    except Exception:
-        time_str = "?"
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Купить себе", f"buy_self_limited_{limit_id}", "gift"))
-    kb.row(make_inline_button("Купить кому-то (по ID)", f"buy_other_limited_{limit_id}", "send"))
-    kb.row(make_inline_button("Отмена", "cancel_buy", "cross"))
-
-    await callback.message.edit_text(
-        f"{pe('limit')} <b>Покупка лимитированного подарка</b>\n\n"
-        f"{pe('limit')} {lg['emoji']} <b>{lg['name']}</b> {pe('fire')}\n"
-        f"{pe('money')} Цена: <b>{lg['price']} {pe('star')}</b>\n"
-        f"{pe('clock')} Осталось: <b>{time_str}</b>\n\n"
-        f"Кому купить?",
-        reply_markup=kb.as_markup()
-    )
-
-
-# ============================================================
-# ОТМЕНА ПОКУПКИ
-# ============================================================
-
-@router.callback_query(F.data == "cancel_buy")
-async def cancel_buy(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text(f"{pe('cross')} Покупка отменена.")
-    await callback.answer()
-
-
-# ============================================================
-# ПОКУПКА СЕБЕ
-# ============================================================
-
-@router.callback_query(F.data.startswith("buy_self_common_"))
-async def buy_self_common(callback: CallbackQuery):
-    gift_id = int(callback.data.split("_")[3])
-    user_id = callback.from_user.id
-    await process_gift_purchase(callback, user_id, user_id, gift_id, "common")
-
-
-@router.callback_query(F.data.startswith("buy_self_rare_"))
-async def buy_self_rare(callback: CallbackQuery):
-    gift_id = int(callback.data.split("_")[3])
-    user_id = callback.from_user.id
-    await process_gift_purchase(callback, user_id, user_id, gift_id, "rare")
-
-
-@router.callback_query(F.data.startswith("buy_self_limited_"))
-async def buy_self_limited(callback: CallbackQuery):
-    limit_id = int(callback.data.split("_")[3])
-    user_id = callback.from_user.id
-    await process_limited_purchase(callback, user_id, user_id, limit_id)
-
-
-# ============================================================
-# ПОКУПКА ДРУГОМУ — ВВОД ID
-# ============================================================
-
-@router.callback_query(F.data.startswith("buy_other_common_"))
-async def buy_other_common(callback: CallbackQuery, state: FSMContext):
-    gift_id = int(callback.data.split("_")[3])
-    await state.update_data(buy_gift_id=gift_id, buy_type="common")
-    await state.set_state(BuyGiftStates.waiting_target)
-    await callback.message.edit_text(
-        f"{pe('send')} <b>Введите ID пользователя-получателя:</b>"
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("buy_other_rare_"))
-async def buy_other_rare(callback: CallbackQuery, state: FSMContext):
-    gift_id = int(callback.data.split("_")[3])
-    await state.update_data(buy_gift_id=gift_id, buy_type="rare")
-    await state.set_state(BuyGiftStates.waiting_target)
-    await callback.message.edit_text(
-        f"{pe('send')} <b>Введите ID пользователя-получателя:</b>"
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("buy_other_limited_"))
-async def buy_other_limited(callback: CallbackQuery, state: FSMContext):
-    limit_id = int(callback.data.split("_")[3])
-    await state.update_data(buy_limit_id=limit_id, buy_type="limited")
-    await state.set_state(BuyGiftStates.waiting_target)
-    await callback.message.edit_text(
-        f"{pe('send')} <b>Введите ID пользователя-получателя:</b>"
-    )
-    await callback.answer()
-
-
-@router.message(BuyGiftStates.waiting_target)
-async def buy_target_entered(message: Message, state: FSMContext):
-    try:
-        target_id = int(message.text.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Введите числовой ID!")
-        return
-
-    target = get_user(target_id)
-    if not target:
-        await message.answer(f"{pe('cross')} Пользователь не найден! Он должен сначала написать боту.")
-        return
-
-    data = await state.get_data()
-    await state.clear()
-
-    buy_type = data.get("buy_type")
-    user_id = message.from_user.id
-
-    if buy_type == "limited":
-        limit_id = data.get("buy_limit_id")
-        await process_limited_purchase_msg(message, user_id, target_id, limit_id)
-    else:
-        gift_id = data.get("buy_gift_id")
-        await process_gift_purchase_msg(message, user_id, target_id, gift_id, buy_type)
-
-
-# ============================================================
-# ОБРАБОТКА ПОКУПКИ ОБЫЧНОГО/РЕДКОГО — CALLBACK
-# ============================================================
-
-async def process_gift_purchase(callback: CallbackQuery, buyer_id: int, target_id: int, gift_id: int, rarity: str):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM gifts WHERE gift_id = ? AND is_active = 1", (gift_id,))
-    gift = c.fetchone()
-    conn.close()
-
-    if not gift:
-        await callback.answer(f"{pe_plain('cross')} Подарок не найден!", show_alert=True)
-        return
-
-    gift = dict(gift)
-
-    if gift["quantity"] > 0 and gift["sold"] >= gift["quantity"]:
-        await callback.answer(f"{pe_plain('cross')} Подарок закончился!", show_alert=True)
-        return
-
-    price = gift["price"]
-    stars = get_stars(buyer_id)
-
-    if stars < price:
-        kb = InlineKeyboardBuilder()
-        kb.row(make_inline_button(
-            f"Оплатить {price}{pe_plain('star')} через Telegram",
-            f"pay_tg_gift_{gift_id}_{target_id}", "star"
-        ))
-        kb.row(make_inline_button("Отмена", "cancel_buy", "cross"))
-        await callback.message.edit_text(
-            f"{pe('cross')} <b>Недостаточно звёзд!</b>\n\n"
-            f"{pe('money')} Нужно: <b>{price} {pe('star')}</b>\n"
-            f"{pe('money')} У вас: <b>{stars} {pe('star')}</b>\n\n"
-            f"Вы можете оплатить звёздами Telegram:",
-            reply_markup=kb.as_markup()
-        )
-        return
-
-    update_stars(buyer_id, -price)
-
-    counter = get_next_counter("gift_purchase_counter")
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO inventory (inv_id, user_id, gift_id, gift_name, gift_emoji, rarity) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (counter, target_id, gift_id, gift["name"], gift["emoji"], gift["rarity"])
-    )
-    if gift["quantity"] > 0:
-        c.execute("UPDATE gifts SET sold = sold + 1 WHERE gift_id = ?", (gift_id,))
-    conn.commit()
-    conn.close()
-
-    is_new = grant_achievement(target_id, "first_gift")
-    new_balance = get_stars(buyer_id)
-
-    result_text = (
-        f"{pe('check')} <b>Подарок куплен!</b>\n\n"
-        f"{gift['emoji']} <b>{gift['name']}</b>\n"
-        f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-        f"{pe('money')} Списано: <b>{price} {pe('star')}</b>\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>\n"
-    )
-    if target_id != buyer_id:
-        result_text += f"{pe('send')} Отправлен: <code>{target_id}</code>\n"
-    if is_new and target_id == buyer_id:
-        result_text += f"\n{pe('achieve')} {pe('medal')} <b>Достижение: Первый подарок!</b>"
-
-    await callback.message.edit_text(result_text)
-
-    if target_id != buyer_id:
-        await send_notification(target_id,
-            f"{pe('gift')} <b>Вам подарили!</b>\n\n"
-            f"{gift['emoji']} <b>{gift['name']}</b>\n"
-            f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-            f"{pe('profile')} От: <code>{buyer_id}</code>"
-        )
-
-
-# ============================================================
-# ОБРАБОТКА ПОКУПКИ — MESSAGE
-# ============================================================
-
-async def process_gift_purchase_msg(message: Message, buyer_id: int, target_id: int, gift_id: int, rarity: str):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM gifts WHERE gift_id = ? AND is_active = 1", (gift_id,))
-    gift = c.fetchone()
-    conn.close()
-
-    if not gift:
-        await message.answer(f"{pe('cross')} Подарок не найден!")
-        return
-
-    gift = dict(gift)
-
-    if gift["quantity"] > 0 and gift["sold"] >= gift["quantity"]:
-        await message.answer(f"{pe('cross')} Подарок закончился!")
-        return
-
-    price = gift["price"]
-    stars = get_stars(buyer_id)
-
-    if stars < price:
-        try:
-            await bot.send_invoice(
-                chat_id=buyer_id,
-                title=f"Покупка {gift['name']}",
-                description=f"Подарок {gift['name']} для пользователя {target_id}",
-                payload=f"buy_gift_{gift_id}_{target_id}",
-                provider_token="",
-                currency="XTR",
-                prices=[LabeledPrice(label=f"{gift['name']}", amount=price)]
-            )
-            await message.answer(
-                f"{pe('topup')} <b>Недостаточно звёзд на балансе.</b>\n"
-                f"Отправлен счёт на оплату через Telegram Stars!"
-            )
-        except Exception as e:
-            await message.answer(f"{pe('cross')} Ошибка создания платежа: {e}")
-        return
-
-    update_stars(buyer_id, -price)
-
-    counter = get_next_counter("gift_purchase_counter")
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO inventory (inv_id, user_id, gift_id, gift_name, gift_emoji, rarity) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (counter, target_id, gift_id, gift["name"], gift["emoji"], gift["rarity"])
-    )
-    if gift["quantity"] > 0:
-        c.execute("UPDATE gifts SET sold = sold + 1 WHERE gift_id = ?", (gift_id,))
-    conn.commit()
-    conn.close()
-
-    is_new = grant_achievement(target_id, "first_gift")
-    new_balance = get_stars(buyer_id)
-
-    result_text = (
-        f"{pe('check')} <b>Подарок куплен!</b>\n\n"
-        f"{gift['emoji']} <b>{gift['name']}</b>\n"
-        f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-        f"{pe('money')} Списано: <b>{price} {pe('star')}</b>\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>\n"
-    )
-    if target_id != buyer_id:
-        result_text += f"{pe('send')} Отправлен: <code>{target_id}</code>\n"
-    if is_new and target_id == buyer_id:
-        result_text += f"\n{pe('achieve')} {pe('medal')} <b>Достижение: Первый подарок!</b>"
-
-    await message.answer(result_text)
-
-    if target_id != buyer_id:
-        await send_notification(target_id,
-            f"{pe('gift')} <b>Вам подарили!</b>\n\n"
-            f"{gift['emoji']} <b>{gift['name']}</b>\n"
-            f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-            f"{pe('profile')} От: <code>{buyer_id}</code>"
-        )
-
-
-# ============================================================
-# ОПЛАТА ЧЕРЕЗ TG STARS
-# ============================================================
-
-@router.callback_query(F.data.startswith("pay_tg_gift_"))
-async def pay_tg_gift(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    gift_id = int(parts[3])
-    target_id = int(parts[4])
-    buyer_id = callback.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM gifts WHERE gift_id = ? AND is_active = 1", (gift_id,))
-    gift = c.fetchone()
-    conn.close()
-
-    if not gift:
-        await callback.answer(f"{pe_plain('cross')} Подарок не найден!", show_alert=True)
-        return
-
-    gift = dict(gift)
-
-    try:
-        desc = f"Подарок {gift['name']}"
-        if target_id != buyer_id:
-            desc += f" для пользователя {target_id}"
-        await bot.send_invoice(
-            chat_id=buyer_id,
-            title=f"Покупка {gift['name']}",
-            description=desc,
-            payload=f"buy_gift_{gift_id}_{target_id}",
-            provider_token="",
-            currency="XTR",
-            prices=[LabeledPrice(label=gift["name"], amount=gift["price"])]
-        )
-        await callback.answer(f"{pe_plain('topup')} Счёт отправлен!", show_alert=True)
-    except Exception as e:
-        await callback.answer(f"{pe_plain('cross')} Ошибка: {e}", show_alert=True)
-
-
-# ============================================================
-# ПОКУПКА ЛИМИТИРОВАННОГО — CALLBACK
-# ============================================================
-
-async def process_limited_purchase(callback: CallbackQuery, buyer_id: int, target_id: int, limit_id: int):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM limited_gifts WHERE limit_id = ? AND is_active = 1", (limit_id,))
-    lg = c.fetchone()
-    conn.close()
-
-    if not lg:
-        await callback.answer(f"{pe_plain('cross')} Подарок не найден!", show_alert=True)
-        return
-
-    lg = dict(lg)
-
-    try:
-        expires = datetime.fromisoformat(lg["expires_at"])
-        if datetime.now() > expires:
-            await callback.answer(f"{pe_plain('cross')} Лимитированный подарок истёк!", show_alert=True)
-            return
-    except Exception:
-        pass
-
-    price = lg["price"]
-    stars = get_stars(buyer_id)
-
-    if stars < price:
-        kb = InlineKeyboardBuilder()
-        kb.row(make_inline_button(
-            f"Оплатить {price}{pe_plain('star')} через Telegram",
-            f"pay_tg_limited_{limit_id}_{target_id}", "star"
-        ))
-        kb.row(make_inline_button("Отмена", "cancel_buy", "cross"))
-        await callback.message.edit_text(
-            f"{pe('cross')} <b>Недостаточно звёзд!</b>\n"
-            f"{pe('money')} Нужно: <b>{price} {pe('star')}</b> | У вас: <b>{stars} {pe('star')}</b>\n\n"
-            f"Оплатите через Telegram Stars:",
-            reply_markup=kb.as_markup()
-        )
-        return
-
-    update_stars(buyer_id, -price)
-
-    counter = get_next_counter("gift_purchase_counter")
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO inventory (inv_id, user_id, limit_id, gift_name, gift_emoji, rarity, is_limited) "
-        "VALUES (?, ?, ?, ?, ?, 'rare', 1)",
-        (counter, target_id, limit_id, lg["name"], lg["emoji"])
-    )
-    c.execute("UPDATE limited_gifts SET sold = sold + 1 WHERE limit_id = ?", (limit_id,))
-    conn.commit()
-    conn.close()
-
-    is_new = grant_achievement(target_id, "first_gift")
-    new_balance = get_stars(buyer_id)
-
-    result_text = (
-        f"{pe('check')} <b>Лимитированный подарок куплен!</b>\n\n"
-        f"{pe('limit')} {lg['emoji']} <b>{lg['name']}</b> {pe('fire')}\n"
-        f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-        f"{pe('money')} Списано: <b>{price} {pe('star')}</b>\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>\n"
-    )
-    if target_id != buyer_id:
-        result_text += f"{pe('send')} Отправлен: <code>{target_id}</code>\n"
-    if is_new and target_id == buyer_id:
-        result_text += f"\n{pe('achieve')} {pe('medal')} <b>Достижение: Первый подарок!</b>"
-
-    await callback.message.edit_text(result_text)
-
-    if target_id != buyer_id:
-        await send_notification(target_id,
-            f"{pe('gift')} <b>Вам подарили лимитированный подарок!</b>\n\n"
-            f"{pe('limit')} {lg['emoji']} <b>{lg['name']}</b>\n"
-            f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-            f"{pe('profile')} От: <code>{buyer_id}</code>"
-        )
-
-
-# ============================================================
-# ПОКУПКА ЛИМИТИРОВАННОГО — MESSAGE
-# ============================================================
-
-async def process_limited_purchase_msg(message: Message, buyer_id: int, target_id: int, limit_id: int):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM limited_gifts WHERE limit_id = ? AND is_active = 1", (limit_id,))
-    lg = c.fetchone()
-    conn.close()
-
-    if not lg:
-        await message.answer(f"{pe('cross')} Подарок не найден!")
-        return
-
-    lg = dict(lg)
-
-    try:
-        expires = datetime.fromisoformat(lg["expires_at"])
-        if datetime.now() > expires:
-            await message.answer(f"{pe('cross')} Лимитированный подарок истёк!")
-            return
-    except Exception:
-        pass
-
-    price = lg["price"]
-    stars = get_stars(buyer_id)
-
-    if stars < price:
-        try:
-            await bot.send_invoice(
-                chat_id=buyer_id,
-                title=f"Покупка {lg['name']}",
-                description=f"Лимитированный подарок {lg['name']}",
-                payload=f"buy_limited_{limit_id}_{target_id}",
-                provider_token="",
-                currency="XTR",
-                prices=[LabeledPrice(label=lg["name"], amount=price)]
-            )
-            await message.answer(f"{pe('topup')} Счёт на оплату отправлен!")
-        except Exception as e:
-            await message.answer(f"{pe('cross')} Ошибка: {e}")
-        return
-
-    update_stars(buyer_id, -price)
-
-    counter = get_next_counter("gift_purchase_counter")
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO inventory (inv_id, user_id, limit_id, gift_name, gift_emoji, rarity, is_limited) "
-        "VALUES (?, ?, ?, ?, ?, 'rare', 1)",
-        (counter, target_id, limit_id, lg["name"], lg["emoji"])
-    )
-    c.execute("UPDATE limited_gifts SET sold = sold + 1 WHERE limit_id = ?", (limit_id,))
-    conn.commit()
-    conn.close()
-
-    is_new = grant_achievement(target_id, "first_gift")
-    new_balance = get_stars(buyer_id)
-
-    await message.answer(
-        f"{pe('check')} <b>Лимитированный подарок куплен!</b>\n\n"
-        f"{pe('limit')} {lg['emoji']} <b>{lg['name']}</b>\n"
-        f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>"
-    )
-
-    if target_id != buyer_id:
-        await send_notification(target_id,
-            f"{pe('gift')} <b>Вам подарили лимитированный подарок!</b>\n\n"
-            f"{pe('limit')} {lg['emoji']} <b>{lg['name']}</b>\n"
-            f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-            f"{pe('profile')} От: <code>{buyer_id}</code>"
-        )
-
-
-@router.callback_query(F.data.startswith("pay_tg_limited_"))
-async def pay_tg_limited(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    limit_id = int(parts[3])
-    target_id = int(parts[4])
-    buyer_id = callback.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM limited_gifts WHERE limit_id = ? AND is_active = 1", (limit_id,))
-    lg = c.fetchone()
-    conn.close()
-
-    if not lg:
-        await callback.answer(f"{pe_plain('cross')} Подарок не найден!", show_alert=True)
-        return
-
-    lg = dict(lg)
-
-    try:
-        await bot.send_invoice(
-            chat_id=buyer_id,
-            title=f"Покупка {lg['name']}",
-            description=f"Лимитированный подарок {lg['name']}",
-            payload=f"buy_limited_{limit_id}_{target_id}",
-            provider_token="",
-            currency="XTR",
-            prices=[LabeledPrice(label=lg["name"], amount=lg["price"])]
-        )
-        await callback.answer(f"{pe_plain('topup')} Счёт отправлен!", show_alert=True)
-    except Exception as e:
-        await callback.answer(f"{pe_plain('cross')} Ошибка: {e}", show_alert=True)
-
-
-# ============================================================
-# ПРОМОКОДЫ — КНОПКА
-# ============================================================
-
-@router.message(F.text.endswith("Промокоды"))
-async def show_promo_menu(message: Message):
-    text = (
-        f"{pe('promo')} <b>Промокоды</b>\n\n"
-        f"{pe('promo')} Введите промокод командой:\n"
-        f"/promo <код>\n\n"
-        f"{pe('warning')} Каждый промокод можно использовать только 1 раз!"
-    )
-    await message.answer(text)
-
-
-# ============================================================
-# АКТИВАЦИЯ ПРОМОКОДА
-# ============================================================
-
-@router.message(Command("promo"))
-async def cmd_promo(message: Message, command: CommandObject):
-    user_id = message.from_user.id
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /promo (код)")
-        return
-
-    code = command.args.strip().upper()
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT * FROM promocodes WHERE code = ? AND is_active = 1", (code,))
-    promo = c.fetchone()
-
-    if not promo:
-        conn.close()
-        await message.answer(f"{pe('cross')} Промокод <code>{code}</code> не найден или неактивен!")
-        return
-
-    promo = dict(promo)
-
-    if promo["current_uses"] >= promo["max_uses"]:
-        conn.close()
-        await message.answer(f"{pe('cross')} Промокод <code>{code}</code> исчерпан!")
-        return
-
-    c.execute(
-        "SELECT id FROM promo_uses WHERE user_id = ? AND promo_id = ?",
-        (user_id, promo["promo_id"])
-    )
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} Вы уже использовали этот промокод!")
-        return
-
-    reward_type = promo["reward_type"]
-    reward_value = promo["reward_value"]
-
-    if reward_type == "stars":
-        amount = int(reward_value)
-        update_stars(user_id, amount)
-        reward_text = f"{pe('money')} +{amount} {pe('star')}"
-
-    elif reward_type == "gift":
-        gift_name = reward_value
-        counter = get_next_counter("gift_purchase_counter")
-        c.execute(
-            "INSERT INTO inventory (inv_id, user_id, gift_name, gift_emoji, rarity) "
-            "VALUES (?, ?, ?, '🎁', 'common')",
-            (counter, user_id, gift_name)
-        )
-        reward_text = f"{pe('gift')} Подарок: {gift_name} (Inv ID: {counter})"
-
-    else:
-        conn.close()
-        await message.answer(f"{pe('cross')} Ошибка промокода!")
-        return
-
-    c.execute(
-        "INSERT INTO promo_uses (user_id, promo_id) VALUES (?, ?)",
-        (user_id, promo["promo_id"])
-    )
-    c.execute(
-        "UPDATE promocodes SET current_uses = current_uses + 1 WHERE promo_id = ?",
-        (promo["promo_id"],)
-    )
-
-    if promo["current_uses"] + 1 >= promo["max_uses"]:
-        c.execute("UPDATE promocodes SET is_active = 0 WHERE promo_id = ?", (promo["promo_id"],))
-
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('check')} <b>Промокод активирован!</b>\n\n"
-        f"{pe('promo')} Код: <code>{code}</code>\n"
-        f"{pe('gift')} Награда: {reward_text}\n\n"
-        f"{pe('sparkles')} Спасибо!"
-    )
-
-
-# Конец части 3
-# ============================================================
-# ============================================================
-# ЧАСТЬ 4: NFT система, Улучшение до NFT, Торговля, Аукционы
-# ============================================================
-
-# ============================================================
-# ТОРГОВЛЯ — КНОПКА МЕНЮ
-# ============================================================
-
-@router.message(F.text.endswith("Торговля"))
-async def show_trade_menu(message: Message):
-    user_id = message.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        SELECT t.*, n.gift_name, n.gift_emoji, n.model_name, n.model_chance,
-               n.pattern_name, n.pattern_chance, n.bg_name, n.bg_chance,
-               n.is_crafted, u.first_name, u.username
-        FROM trades t
-        JOIN nfts n ON t.nft_id = n.nft_id
-        JOIN users u ON t.seller_id = u.user_id
-        WHERE t.is_active = 1
-        ORDER BY t.created_at DESC
-        LIMIT 10
-    """)
-    trades = [dict(row) for row in c.fetchall()]
-    conn.close()
-
-    text = (
-        f"{pe('trade')} <b>Торговая площадка NFT</b>\n\n"
-        f"{pe('leaderboard')} Комиссия продавца: <b>15%</b>\n"
-        f"{pe('rules_emoji')} Команды:\n"
-        f"├ /trade &lt;nft_id&gt; &lt;цена&gt; — Выставить\n"
-        f"└ /del_trade &lt;trade_id&gt; — Снять\n\n"
-    )
-
-    if not trades:
-        text += f"{pe('package')} Нет активных предложений."
-        await message.answer(text)
-        return
-
-    text += f"<b>{pe('fire')} Активные предложения:</b>\n\n"
-
-    kb = InlineKeyboardBuilder()
-
-    for t in trades:
-        crafted = f" {pe('hammer')}" if t["is_crafted"] else ""
-        seller_name = t["first_name"] or "?"
-        seller_uname = f"@{t['username']}" if t["username"] else ""
-
-        text += (
-            f"{'─' * 28}\n"
-            f"{pe('pin')} <b>Trade #{t['trade_id']}</b>\n"
-            f"{t['gift_emoji']} <b>{t['gift_name']}</b> | NFT #{t['nft_id']}{crafted}\n"
-            f"{pe('model')} Модель: <b>{t['model_name']}</b> ({t['model_chance']}%)\n"
-            f"{pe('pattern')} Узор: <b>{t['pattern_name']}</b> ({t['pattern_chance']}%)\n"
-            f"{pe('background')} Фон: <b>{t['bg_name']}</b> ({t['bg_chance']}%)\n"
-            f"{pe('money')} Цена: <b>{t['price']} {pe('star')}</b>\n"
-            f"{pe('seller')} Продавец: {seller_name} {seller_uname}\n\n"
-        )
-
-        kb.row(make_inline_button(
-            f"Купить NFT #{t['nft_id']} — {t['price']}{pe_plain('star')}",
-            f"buy_trade_{t['trade_id']}", "buy"
-        ))
-
-    kb.row(make_inline_button("Ещё предложения", "trade_page_1", "next"))
-
-    await message.answer(text, reply_markup=kb.as_markup())
-
-
-# ============================================================
-# ТОРГОВЛЯ — ПАГИНАЦИЯ
-# ============================================================
-
-@router.callback_query(F.data.startswith("trade_page_"))
-async def trade_page(callback: CallbackQuery):
-    page = int(callback.data.split("_")[2])
-    per_page = 5
-    offset = page * per_page
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        SELECT t.*, n.gift_name, n.gift_emoji, n.model_name, n.model_chance,
-               n.pattern_name, n.pattern_chance, n.bg_name, n.bg_chance,
-               n.is_crafted, u.first_name, u.username
-        FROM trades t
-        JOIN nfts n ON t.nft_id = n.nft_id
-        JOIN users u ON t.seller_id = u.user_id
-        WHERE t.is_active = 1
-        ORDER BY t.created_at DESC
-        LIMIT ? OFFSET ?
-    """, (per_page, offset))
-    trades = [dict(row) for row in c.fetchall()]
-
-    c.execute("SELECT COUNT(*) as cnt FROM trades WHERE is_active = 1")
-    total = c.fetchone()["cnt"]
-    conn.close()
-
-    if not trades:
-        await callback.answer(f"{pe_plain('package')} Больше нет предложений!", show_alert=True)
-        return
-
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    text = f"{pe('trade')} <b>Торговля</b> (стр. {page + 1}/{total_pages}):\n\n"
-
-    kb = InlineKeyboardBuilder()
-
-    for t in trades:
-        crafted = f" {pe('hammer')}" if t["is_crafted"] else ""
-        text += (
-            f"{'─' * 28}\n"
-            f"{pe('pin')} <b>Trade #{t['trade_id']}</b>\n"
-            f"{t['gift_emoji']} <b>{t['gift_name']}</b> | NFT #{t['nft_id']}{crafted}\n"
-            f"{pe('model')} {t['model_name']} ({t['model_chance']}%) | "
-            f"{pe('pattern')} {t['pattern_name']} ({t['pattern_chance']}%) | "
-            f"{pe('background')} {t['bg_name']} ({t['bg_chance']}%)\n"
-            f"{pe('money')} <b>{t['price']} {pe('star')}</b> | {pe('seller')} {t['first_name']}\n\n"
-        )
-        kb.row(make_inline_button(
-            f"Купить #{t['nft_id']} — {t['price']}{pe_plain('star')}",
-            f"buy_trade_{t['trade_id']}", "buy"
-        ))
-
-    nav = []
-    if page > 0:
-        nav.append(make_inline_button("Назад", f"trade_page_{page - 1}", "back"))
-    if (page + 1) * per_page < total:
-        nav.append(make_inline_button("Далее", f"trade_page_{page + 1}", "next"))
-    if nav:
-        kb.row(*nav)
-
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-# ============================================================
-# ПОКУПКА NFT С ТОРГОВЛИ
-# ============================================================
-
-@router.callback_query(F.data.startswith("buy_trade_"))
-async def buy_trade(callback: CallbackQuery):
-    trade_id = int(callback.data.split("_")[2])
-    buyer_id = callback.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        SELECT t.*, n.gift_name, n.gift_emoji, n.model_name, n.model_chance,
-               n.pattern_name, n.pattern_chance, n.bg_name, n.bg_chance
-        FROM trades t
-        JOIN nfts n ON t.nft_id = n.nft_id
-        WHERE t.trade_id = ? AND t.is_active = 1
-    """, (trade_id,))
-    trade = c.fetchone()
-
-    if not trade:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Предложение не найдено или уже продано!", show_alert=True)
-        return
-
-    trade = dict(trade)
-
-    if trade["seller_id"] == buyer_id:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Нельзя купить свой NFT!", show_alert=True)
-        return
-
-    user = get_user(buyer_id)
-    if user and user["is_buy_banned"]:
-        conn.close()
-        await callback.answer(f"{pe_plain('ban_emoji')} Вам запрещено покупать!", show_alert=True)
-        return
-
-    price = trade["price"]
-    stars = get_stars(buyer_id)
-
-    if stars < price:
-        conn.close()
-        await callback.answer(
-            f"{pe_plain('cross')} Недостаточно звёзд! Нужно {price}{pe_plain('star')}, у вас {stars}{pe_plain('star')}",
-            show_alert=True
-        )
-        return
-
-    update_stars(buyer_id, -price)
-
-    seller_amount = int(price * 0.85)
-    update_stars(trade["seller_id"], seller_amount)
-
-    c.execute("UPDATE nfts SET owner_id = ? WHERE nft_id = ?", (buyer_id, trade["nft_id"]))
-    c.execute(
-        "UPDATE inventory SET user_id = ? WHERE nft_id = ? AND user_id = ?",
-        (buyer_id, trade["nft_id"], trade["seller_id"])
-    )
-    c.execute("UPDATE trades SET is_active = 0 WHERE trade_id = ?", (trade_id,))
-
-    conn.commit()
-    conn.close()
-
-    new_balance = get_stars(buyer_id)
-
-    await callback.message.edit_text(
-        f"{pe('check')} <b>NFT куплен!</b>\n\n"
-        f"{trade['gift_emoji']} <b>{trade['gift_name']}</b> | NFT #{trade['nft_id']}\n"
-        f"{pe('model')} {trade['model_name']} ({trade['model_chance']}%)\n"
-        f"{pe('pattern')} {trade['pattern_name']} ({trade['pattern_chance']}%)\n"
-        f"{pe('background')} {trade['bg_name']} ({trade['bg_chance']}%)\n\n"
-        f"{pe('money')} Оплачено: <b>{price} {pe('star')}</b>\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>"
-    )
-
-    await send_notification(trade["seller_id"],
-        f"{pe('star')} <b>Ваш NFT продан!</b>\n\n"
-        f"{trade['gift_emoji']} <b>{trade['gift_name']}</b> | NFT #{trade['nft_id']}\n"
-        f"{pe('money')} Получено: <b>{seller_amount} {pe('star')}</b> (комиссия 15%)\n"
-        f"{pe('buyer')} Покупатель: <code>{buyer_id}</code>"
-    )
-
-
-# ============================================================
-# ВЫСТАВЛЕНИЕ NFT НА ТОРГОВЛЮ — /trade
-# ============================================================
-
-@router.message(Command("trade"))
-async def cmd_trade(message: Message, command: CommandObject):
-    user_id = message.from_user.id
-
-    user = get_user(user_id)
-    if user and user["is_trade_banned"]:
-        await message.answer(
-            f"{pe('ban_emoji')} <b>Вам запрещено торговать!</b>\n"
-            f"{pe('rules_emoji')} Причина: {user['trade_ban_reason']}"
-        )
-        return
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /trade <nft_id> <цена>\n"
-            f"Пример: /trade 5 100"
-        )
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Укажите nft_id и цену!")
-        return
-
-    try:
-        nft_id = int(parts[0])
-        price = int(parts[1])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    if price < 1:
-        await message.answer(f"{pe('cross')} Цена должна быть минимум 1 {pe('star')}!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT * FROM nfts WHERE nft_id = ? AND owner_id = ?", (nft_id, user_id))
-    nft = c.fetchone()
-
-    if not nft:
-        conn.close()
-        await message.answer(f"{pe('cross')} NFT не найден или не принадлежит вам!")
-        return
-
-    nft = dict(nft)
-
-    c.execute("SELECT trade_id FROM trades WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот NFT уже выставлен на торговлю!")
-        return
-
-    c.execute("SELECT rental_id FROM nft_rentals WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот NFT сдан в аренду!")
-        return
-
-    c.execute("SELECT auction_id FROM auctions WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот NFT на аукционе!")
-        return
-
-    c.execute(
-        "INSERT INTO trades (seller_id, nft_id, price) VALUES (?, ?, ?)",
-        (user_id, nft_id, price)
-    )
-    trade_id = c.lastrowid
-    conn.commit()
-    conn.close()
-
-    seller_gets = int(price * 0.85)
-
-    await message.answer(
-        f"{pe('check')} <b>NFT выставлен на торговлю!</b>\n\n"
-        f"{nft['gift_emoji']} <b>{nft['gift_name']}</b> | NFT #{nft_id}\n"
-        f"{pe('model')} {nft['model_name']} ({nft['model_chance']}%)\n"
-        f"{pe('pattern')} {nft['pattern_name']} ({nft['pattern_chance']}%)\n"
-        f"{pe('background')} {nft['bg_name']} ({nft['bg_chance']}%)\n\n"
-        f"{pe('money')} Цена: <b>{price} {pe('star')}</b>\n"
-        f"{pe('money')} Вы получите: <b>{seller_gets} {pe('star')}</b> (−15%)\n"
-        f"{pe('pin')} Trade ID: <code>{trade_id}</code>"
-    )
-
-
-# ============================================================
-# СНЯТИЕ С ТОРГОВЛИ — /del_trade
-# ============================================================
-
-@router.message(Command("del_trade"))
-async def cmd_del_trade(message: Message, command: CommandObject):
-    user_id = message.from_user.id
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /del_trade <trade_id>")
-        return
-
-    try:
-        trade_id = int(command.args.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный trade_id!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "SELECT * FROM trades WHERE trade_id = ? AND seller_id = ? AND is_active = 1",
-        (trade_id, user_id)
-    )
-    trade = c.fetchone()
-
-    if not trade:
-        conn.close()
-        await message.answer(f"{pe('cross')} Торговля не найдена или не принадлежит вам!")
-        return
-
-    c.execute("UPDATE trades SET is_active = 0 WHERE trade_id = ?", (trade_id,))
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('check')} <b>NFT снят с торговли!</b>\n"
-        f"{pe('pin')} Trade ID: <code>{trade_id}</code>"
-    )
-
-
-# ============================================================
-# УЛУЧШЕНИЕ ПОДАРКА ДО NFT
-# ============================================================
-
-@router.callback_query(F.data.startswith("upgrade_to_nft_"))
-async def upgrade_to_nft(callback: CallbackQuery):
-    inv_id = int(callback.data.split("_")[3])
-    user_id = callback.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT * FROM inventory WHERE inv_id = ? AND user_id = ?", (inv_id, user_id))
-    item = c.fetchone()
-
-    if not item:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Подарок не найден!", show_alert=True)
-        return
-
-    item = dict(item)
-
-    if item["rarity"] != "rare":
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Только редкие подарки можно улучшить до NFT!", show_alert=True)
-        return
-
-    if item["is_nft"]:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Этот подарок уже NFT!", show_alert=True)
-        return
-
-    fee = get_nft_create_fee(user_id)
-    stars = get_stars(user_id)
-
-    if stars < fee:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Недостаточно звёзд! Нужно {fee}{pe_plain('star')}", show_alert=True)
-        return
-
-    model, pattern, bg = generate_nft_characteristics()
-
-    update_stars(user_id, -fee)
-
-    c.execute(
-        "INSERT INTO nfts (owner_id, gift_name, gift_emoji, model_name, model_chance, "
-        "pattern_name, pattern_chance, bg_name, bg_chance, source_gift_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id, item["gift_name"], item["gift_emoji"],
-         model["name"], model["chance"],
-         pattern["name"], pattern["chance"],
-         bg["name"], bg["chance"],
-         inv_id)
-    )
-    nft_id = c.lastrowid
-
-    c.execute(
-        "UPDATE inventory SET is_nft = 1, nft_id = ? WHERE inv_id = ?",
-        (nft_id, inv_id)
-    )
-
-    conn.commit()
-    conn.close()
-
-    is_new = grant_achievement(user_id, "first_nft")
-    new_balance = get_stars(user_id)
-
-    result_text = (
-        f"{pe('nft')} <b>NFT создан!</b> {pe('success')}\n\n"
-        f"{item['gift_emoji']} <b>{item['gift_name']}</b> | NFT #{nft_id}\n\n"
-        f"<b>{pe('leaderboard')} Характеристики:</b>\n"
-        f"{pe('model')} Модель: <b>{model['name']}</b> ({model['chance']}%)\n"
-        f"{pe('pattern')} Узор: <b>{pattern['name']}</b> ({pattern['chance']}%)\n"
-        f"{pe('background')} Фон: <b>{bg['name']}</b> ({bg['chance']}%)\n\n"
-        f"{pe('money')} Комиссия: <b>{fee} {pe('star')}</b>\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>"
-    )
-
-    if is_new:
-        result_text += f"\n\n{pe('achieve')} {pe('medal')} <b>Достижение: Первый NFT!</b>"
-
-    await callback.message.edit_text(result_text)
-
-
-# ============================================================
-# ПОКАЗАТЬ УЛУЧШАЕМЫЕ ПОДАРКИ
-# ============================================================
-
-@router.callback_query(F.data.startswith("show_upgradeable_"))
-async def show_upgradeable(callback: CallbackQuery):
-    page = int(callback.data.split("_")[2])
-    user_id = callback.from_user.id
-    per_page = 5
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "SELECT * FROM inventory WHERE user_id = ? AND rarity = 'rare' AND is_nft = 0 "
-        "ORDER BY inv_id DESC LIMIT ? OFFSET ?",
-        (user_id, per_page, page * per_page)
-    )
-    items = [dict(row) for row in c.fetchall()]
-
-    c.execute(
-        "SELECT COUNT(*) as cnt FROM inventory WHERE user_id = ? AND rarity = 'rare' AND is_nft = 0",
-        (user_id,)
-    )
-    total = c.fetchone()["cnt"]
-    conn.close()
-
-    if not items and page == 0:
-        await callback.answer(f"{pe_plain('package')} Нет редких подарков для улучшения!", show_alert=True)
-        return
-
-    fee = get_nft_create_fee(user_id)
-    total_pages = max(1, (total + per_page - 1) // per_page)
-
-    text = (
-        f"{pe('upgrade')} <b>Улучшение до NFT</b> (стр. {page + 1}/{total_pages})\n"
-        f"{pe('money')} Комиссия: <b>{fee} {pe('star')}</b>\n\n"
-    )
-
-    kb = InlineKeyboardBuilder()
-
-    for item in items:
-        limited_label = f" {pe('limit')}" if item["is_limited"] else ""
-        text += (
-            f"{pe('rare')} {item['gift_emoji']} <b>{item['gift_name']}</b>{limited_label}\n"
-            f"   {pe('id')} Inv ID: <code>{item['inv_id']}</code>\n\n"
-        )
-        kb.row(make_inline_button(
-            f"Улучшить {item['gift_emoji']} {item['gift_name']}",
-            f"upgrade_to_nft_{item['inv_id']}", "upgrade"
-        ))
-
-    nav = []
-    if page > 0:
-        nav.append(make_inline_button("Назад", f"show_upgradeable_{page - 1}", "back"))
-    if (page + 1) * per_page < total:
-        nav.append(make_inline_button("Далее", f"show_upgradeable_{page + 1}", "next"))
-    if nav:
-        kb.row(*nav)
-    kb.row(make_inline_button("Назад к профилю", "back_profile", "back"))
-
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-# ============================================================
-# АУКЦИОНЫ — ПРОСМОТР /auctions
-# ============================================================
-
-@router.message(Command("auctions"))
-async def cmd_auctions(message: Message):
-    conn = get_db()
-    c = conn.cursor()
-    now = datetime.now().isoformat()
-
-    c.execute("""
-        SELECT a.*, n.gift_name, n.gift_emoji, n.model_name, n.model_chance,
-               n.pattern_name, n.pattern_chance, n.bg_name, n.bg_chance,
-               n.is_crafted, u.first_name
-        FROM auctions a
-        JOIN nfts n ON a.nft_id = n.nft_id
-        JOIN users u ON a.seller_id = u.user_id
-        WHERE a.is_active = 1 AND a.ends_at > ?
-        ORDER BY a.ends_at ASC
-        LIMIT 10
-    """, (now,))
-    auctions = [dict(row) for row in c.fetchall()]
-
-    if not auctions:
-        conn.close()
-        await message.answer(
-            f"{pe('auction')} <b>Аукционы</b>\n\n"
-            f"{pe('package')} Нет активных аукционов.\n\n"
-            f"Создать: /add_auc <nft_id> <мин_ставка> <шаг> <дата_окончания>"
-        )
-        return
-
-    text = f"{pe('auction')} <b>Активные аукционы</b>\n\n"
-
-    kb = InlineKeyboardBuilder()
-
-    for auc in auctions:
-        c.execute(
-            "SELECT user_id, amount FROM auction_bids WHERE auction_id = ? ORDER BY amount DESC LIMIT 1",
-            (auc["auction_id"],)
-        )
-        top_bid = c.fetchone()
-
-        c.execute(
-            "SELECT COUNT(*) as cnt FROM auction_bids WHERE auction_id = ?",
-            (auc["auction_id"],)
-        )
-        bid_count = c.fetchone()["cnt"]
-
-        try:
-            ends = datetime.fromisoformat(auc["ends_at"])
-            time_left = ends - datetime.now()
-            hours = int(time_left.total_seconds() // 3600)
-            mins = int((time_left.total_seconds() % 3600) // 60)
-            time_str = f"{hours}ч {mins}м"
-        except Exception:
-            time_str = "?"
-
-        top_str = f"{top_bid['amount']} {pe('star')} (ID: {top_bid['user_id']})" if top_bid else "Нет ставок"
-        crafted = f" {pe('hammer')}" if auc["is_crafted"] else ""
-
-        text += (
-            f"{'─' * 28}\n"
-            f"{pe('auction')} <b>Аукцион #{auc['auction_id']}</b>\n"
-            f"{auc['gift_emoji']} <b>{auc['gift_name']}</b> | NFT #{auc['nft_id']}{crafted}\n"
-            f"{pe('model')} {auc['model_name']} ({auc['model_chance']}%)\n"
-            f"{pe('pattern')} {auc['pattern_name']} ({auc['pattern_chance']}%)\n"
-            f"{pe('background')} {auc['bg_name']} ({auc['bg_chance']}%)\n"
-            f"{pe('money')} Мин. ставка: <b>{auc['min_bid']} {pe('star')}</b>\n"
-            f"{pe('bid')} Шаг: <b>{auc['bid_step']} {pe('star')}</b>\n"
-            f"{pe('winner')} Топ ставка: <b>{top_str}</b>\n"
-            f"{pe('pin')} Ставок: <b>{bid_count}</b>\n"
-            f"{pe('clock')} Осталось: <b>{time_str}</b>\n"
-            f"{pe('seller')} Продавец: {auc['first_name']}\n\n"
-        )
-
-        kb.row(make_inline_button(
-            f"Поставить #{auc['auction_id']}",
-            f"auc_bid_{auc['auction_id']}", "star"
-        ))
-
-    conn.close()
-    await message.answer(text, reply_markup=kb.as_markup())
-
-
-# ============================================================
-# СОЗДАНИЕ АУКЦИОНА — /add_auc
-# ============================================================
-
-@router.message(Command("add_auc"))
-async def cmd_add_auc(message: Message, command: CommandObject):
-    user_id = message.from_user.id
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /add_auc <nft_id> <мин_ставка> <шаг> <дата_окончания>\n"
-            f"Пример: /add_auc 5 50 10 2025-01-20 18:00"
-        )
-        return
-
-    parts = command.args.strip().split(maxsplit=3)
-    if len(parts) < 4:
-        await message.answer(f"{pe('cross')} Недостаточно параметров!")
-        return
-
-    try:
-        nft_id = int(parts[0])
-        min_bid = int(parts[1])
-        bid_step = int(parts[2])
-        ends_at_str = parts[3]
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    if bid_step < 10:
-        await message.answer(f"{pe('cross')} Минимальный шаг ставки — 10 {pe('star')}!")
-        return
-
-    if min_bid < 1:
-        await message.answer(f"{pe('cross')} Минимальная ставка — 1 {pe('star')}!")
-        return
-
-    try:
-        ends_at = datetime.fromisoformat(ends_at_str)
-    except Exception:
-        try:
-            ends_at = datetime.strptime(ends_at_str, "%Y-%m-%d %H:%M")
-        except Exception:
-            await message.answer(f"{pe('cross')} Некорректный формат даты! Используйте: YYYY-MM-DD HH:MM")
-            return
-
-    max_end = datetime.now() + timedelta(hours=48)
-    if ends_at > max_end:
-        await message.answer(f"{pe('cross')} Максимальное время аукциона — 48 часов!")
-        return
-
-    if ends_at <= datetime.now():
-        await message.answer(f"{pe('cross')} Дата окончания должна быть в будущем!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT * FROM nfts WHERE nft_id = ? AND owner_id = ?", (nft_id, user_id))
-    nft = c.fetchone()
-
-    if not nft:
-        conn.close()
-        await message.answer(f"{pe('cross')} NFT не найден или не принадлежит вам!")
-        return
-
-    nft = dict(nft)
-
-    c.execute("SELECT trade_id FROM trades WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот NFT уже на торговле!")
-        return
-
-    c.execute("SELECT rental_id FROM nft_rentals WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот NFT в аренде!")
-        return
-
-    c.execute("SELECT auction_id FROM auctions WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот NFT уже на аукционе!")
-        return
-
-    c.execute(
-        "INSERT INTO auctions (seller_id, nft_id, min_bid, bid_step, ends_at) VALUES (?, ?, ?, ?, ?)",
-        (user_id, nft_id, min_bid, bid_step, ends_at.isoformat())
-    )
-    auction_id = c.lastrowid
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('auction')} <b>Аукцион создан!</b>\n\n"
-        f"{nft['gift_emoji']} <b>{nft['gift_name']}</b> | NFT #{nft_id}\n"
-        f"{pe('model')} {nft['model_name']} ({nft['model_chance']}%)\n"
-        f"{pe('pattern')} {nft['pattern_name']} ({nft['pattern_chance']}%)\n"
-        f"{pe('background')} {nft['bg_name']} ({nft['bg_chance']}%)\n\n"
-        f"{pe('money')} Мин. ставка: <b>{min_bid} {pe('star')}</b>\n"
-        f"{pe('bid')} Шаг: <b>{bid_step} {pe('star')}</b>\n"
-        f"{pe('clock')} До: <b>{ends_at.strftime('%d.%m.%Y %H:%M')}</b>\n"
-        f"{pe('auction')} Аукцион ID: <code>{auction_id}</code>"
-    )
-
-
-# ============================================================
-# СТАВКА НА АУКЦИОНЕ
-# ============================================================
-
-@router.callback_query(F.data.startswith("auc_bid_"))
-async def auc_bid_start(callback: CallbackQuery):
-    auction_id = int(callback.data.split("_")[2])
-    user_id = callback.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM auctions WHERE auction_id = ? AND is_active = 1", (auction_id,))
-    auc = c.fetchone()
-
-    if not auc:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Аукцион не найден!", show_alert=True)
-        return
-
-    auc = dict(auc)
-
-    try:
-        ends = datetime.fromisoformat(auc["ends_at"])
-        if datetime.now() > ends:
-            conn.close()
-            await callback.answer(f"{pe_plain('cross')} Аукцион завершён!", show_alert=True)
-            return
-    except Exception:
-        pass
-
-    if auc["seller_id"] == user_id:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Нельзя ставить на свой аукцион!", show_alert=True)
-        return
-
-    c.execute(
-        "SELECT amount FROM auction_bids WHERE auction_id = ? ORDER BY amount DESC LIMIT 1",
-        (auction_id,)
-    )
-    top = c.fetchone()
-    conn.close()
-
-    if top:
-        min_new_bid = top["amount"] + auc["bid_step"]
-    else:
-        min_new_bid = auc["min_bid"]
-
-    stars = get_stars(user_id)
-
-    kb = InlineKeyboardBuilder()
-    for mult in [1, 2, 3, 5]:
-        bid_amount = min_new_bid + auc["bid_step"] * (mult - 1)
-        if bid_amount <= stars:
-            kb.row(make_inline_button(
-                f"{bid_amount} {pe_plain('star')}",
-                f"place_bid_{auction_id}_{bid_amount}", "money"
-            ))
-
-    kb.row(make_inline_button(
-        "Своя ставка",
-        f"custom_bid_{auction_id}_{min_new_bid}", "appeal"
-    ))
-    kb.row(make_inline_button("Отмена", "cancel_bid", "cross"))
-
-    await callback.message.edit_text(
-        f"{pe('auction')} <b>Аукцион #{auction_id}</b>\n\n"
-        f"{pe('money')} Минимальная ставка: <b>{min_new_bid} {pe('star')}</b>\n"
-        f"{pe('bid')} Шаг: <b>{auc['bid_step']} {pe('star')}</b>\n"
-        f"{pe('money')} Ваш баланс: <b>{stars} {pe('star')}</b>\n\n"
-        f"Выберите сумму ставки:",
-        reply_markup=kb.as_markup()
-    )
-
-
-@router.callback_query(F.data == "cancel_bid")
-async def cancel_bid(callback: CallbackQuery):
-    await callback.message.edit_text(f"{pe('cross')} Ставка отменена.")
-
-
-@router.callback_query(F.data.startswith("place_bid_"))
-async def place_bid(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    auction_id = int(parts[2])
-    amount = int(parts[3])
-    user_id = callback.from_user.id
-
-    await process_bid(callback, user_id, auction_id, amount)
-
-
-@router.callback_query(F.data.startswith("custom_bid_"))
-async def custom_bid_start(callback: CallbackQuery, state: FSMContext):
-    parts = callback.data.split("_")
-    auction_id = int(parts[2])
-    min_bid = int(parts[3])
-
-    await state.update_data(auction_id=auction_id, min_bid=min_bid)
-    await state.set_state(AuctionStates.waiting_details)
-
-    await callback.message.edit_text(
-        f"{pe('auction')} <b>Введите сумму ставки</b> (мин. {min_bid} {pe('star')}):"
-    )
-    await callback.answer()
-
-
-@router.message(AuctionStates.waiting_details)
-async def custom_bid_amount(message: Message, state: FSMContext):
-    data = await state.get_data()
-    await state.clear()
-
-    try:
-        amount = int(message.text.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Введите число!")
-        return
-
-    auction_id = data["auction_id"]
-    min_bid = data["min_bid"]
-
-    if amount < min_bid:
-        await message.answer(f"{pe('cross')} Минимальная ставка: {min_bid} {pe('star')}!")
-        return
-
-    user_id = message.from_user.id
-    stars = get_stars(user_id)
-
-    if amount > stars:
-        await message.answer(f"{pe('cross')} Недостаточно звёзд! У вас {stars} {pe('star')}")
-        return
-
-    await process_bid_msg(message, user_id, auction_id, amount)
-
-
-async def process_bid(callback: CallbackQuery, user_id: int, auction_id: int, amount: int):
-    stars = get_stars(user_id)
-    if amount > stars:
-        await callback.answer(
-            f"{pe_plain('cross')} Недостаточно звёзд! У вас {stars}{pe_plain('star')}",
-            show_alert=True
-        )
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT * FROM auctions WHERE auction_id = ? AND is_active = 1", (auction_id,))
-    auc = c.fetchone()
-    if not auc:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Аукцион не найден!", show_alert=True)
-        return
-
-    auc = dict(auc)
-
-    try:
-        ends = datetime.fromisoformat(auc["ends_at"])
-        if datetime.now() > ends:
-            conn.close()
-            await callback.answer(f"{pe_plain('cross')} Аукцион завершён!", show_alert=True)
-            return
-    except Exception:
-        pass
-
-    c.execute(
-        "SELECT user_id, amount FROM auction_bids WHERE auction_id = ? ORDER BY amount DESC LIMIT 1",
-        (auction_id,)
-    )
-    top = c.fetchone()
-    if top and amount <= top["amount"]:
-        conn.close()
-        await callback.answer(
-            f"{pe_plain('cross')} Ставка должна быть больше {top['amount']}{pe_plain('star')}!",
-            show_alert=True
-        )
-        return
-
-    if not top and amount < auc["min_bid"]:
-        conn.close()
-        await callback.answer(
-            f"{pe_plain('cross')} Минимальная ставка: {auc['min_bid']}{pe_plain('star')}!",
-            show_alert=True
-        )
-        return
-
-    if top and top["user_id"] != user_id:
-        update_stars(top["user_id"], top["amount"])
-        await send_notification(top["user_id"],
-            f"{pe('auction')} <b>Вашу ставку перебили!</b>\n\n"
-            f"{pe('auction')} Аукцион #{auction_id}\n"
-            f"{pe('money')} Возвращено: <b>{top['amount']} {pe('star')}</b>\n"
-            f"{pe('bid')} Новая топ ставка: <b>{amount} {pe('star')}</b>"
-        )
-
-    update_stars(user_id, -amount)
-
-    c.execute(
-        "INSERT INTO auction_bids (auction_id, user_id, amount) VALUES (?, ?, ?)",
-        (auction_id, user_id, amount)
-    )
-    conn.commit()
-    conn.close()
-
-    new_balance = get_stars(user_id)
-
-    await callback.message.edit_text(
-        f"{pe('check')} <b>Ставка принята!</b>\n\n"
-        f"{pe('auction')} Аукцион #{auction_id}\n"
-        f"{pe('money')} Ваша ставка: <b>{amount} {pe('star')}</b>\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>"
-    )
-
-    await send_notification(auc["seller_id"],
-        f"{pe('auction')} <b>Новая ставка на аукционе!</b>\n\n"
-        f"{pe('auction')} Аукцион #{auction_id}\n"
-        f"{pe('money')} Ставка: <b>{amount} {pe('star')}</b>\n"
-        f"{pe('profile')} От: <code>{user_id}</code>"
-    )
-
-
-async def process_bid_msg(message: Message, user_id: int, auction_id: int, amount: int):
-    stars = get_stars(user_id)
-    if amount > stars:
-        await message.answer(f"{pe('cross')} Недостаточно звёзд! У вас {stars} {pe('star')}")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT * FROM auctions WHERE auction_id = ? AND is_active = 1", (auction_id,))
-    auc = c.fetchone()
-    if not auc:
-        conn.close()
-        await message.answer(f"{pe('cross')} Аукцион не найден!")
-        return
-
-    auc = dict(auc)
-
-    try:
-        ends = datetime.fromisoformat(auc["ends_at"])
-        if datetime.now() > ends:
-            conn.close()
-            await message.answer(f"{pe('cross')} Аукцион завершён!")
-            return
-    except Exception:
-        pass
-
-    c.execute(
-        "SELECT user_id, amount FROM auction_bids WHERE auction_id = ? ORDER BY amount DESC LIMIT 1",
-        (auction_id,)
-    )
-    top = c.fetchone()
-
-    if top and amount <= top["amount"]:
-        conn.close()
-        await message.answer(f"{pe('cross')} Ставка должна быть больше {top['amount']} {pe('star')}!")
-        return
-
-    if not top and amount < auc["min_bid"]:
-        conn.close()
-        await message.answer(f"{pe('cross')} Минимальная ставка: {auc['min_bid']} {pe('star')}!")
-        return
-
-    if top and top["user_id"] != user_id:
-        update_stars(top["user_id"], top["amount"])
-        await send_notification(top["user_id"],
-            f"{pe('auction')} <b>Вашу ставку перебили!</b>\n"
-            f"{pe('auction')} Аукцион #{auction_id}\n"
-            f"{pe('money')} Возвращено: <b>{top['amount']} {pe('star')}</b>"
-        )
-
-    update_stars(user_id, -amount)
-
-    c.execute(
-        "INSERT INTO auction_bids (auction_id, user_id, amount) VALUES (?, ?, ?)",
-        (auction_id, user_id, amount)
-    )
-    conn.commit()
-    conn.close()
-
-    new_balance = get_stars(user_id)
-    await message.answer(
-        f"{pe('check')} <b>Ставка принята!</b>\n\n"
-        f"{pe('auction')} Аукцион #{auction_id}\n"
-        f"{pe('money')} Ставка: <b>{amount} {pe('star')}</b>\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>"
-    )
-
-    await send_notification(auc["seller_id"],
-        f"{pe('auction')} <b>Новая ставка!</b>\n"
-        f"{pe('auction')} Аукцион #{auction_id} | {pe('money')} {amount} {pe('star')}"
-    )
-
-
-# ============================================================
-# ЗАВЕРШЕНИЕ АУКЦИОНОВ (фоновая задача)
-# ============================================================
-
-async def check_auctions():
-    conn = get_db()
-    c = conn.cursor()
-    now = datetime.now().isoformat()
-
-    c.execute("SELECT * FROM auctions WHERE is_active = 1 AND ends_at <= ?", (now,))
-    expired = [dict(row) for row in c.fetchall()]
-
-    for auc in expired:
-        c.execute(
-            "SELECT user_id, amount FROM auction_bids WHERE auction_id = ? ORDER BY amount DESC LIMIT 1",
-            (auc["auction_id"],)
-        )
-        winner = c.fetchone()
-
-        if winner:
-            winner = dict(winner)
-            c.execute("UPDATE nfts SET owner_id = ? WHERE nft_id = ?", (winner["user_id"], auc["nft_id"]))
-            c.execute(
-                "UPDATE inventory SET user_id = ? WHERE nft_id = ? AND user_id = ?",
-                (winner["user_id"], auc["nft_id"], auc["seller_id"])
-            )
-
-            seller_gets = int(winner["amount"] * 0.85)
-            update_stars(auc["seller_id"], seller_gets)
-
-            await send_notification(winner["user_id"],
-                f"{pe('winner')} <b>Вы выиграли аукцион #{auc['auction_id']}!</b>\n\n"
-                f"{pe('nft')} NFT #{auc['nft_id']} теперь ваш!\n"
-                f"{pe('money')} Оплачено: <b>{winner['amount']} {pe('star')}</b>"
-            )
-
-            await send_notification(auc["seller_id"],
-                f"{pe('auction')} <b>Аукцион #{auc['auction_id']} завершён!</b>\n\n"
-                f"{pe('winner')} Победитель: <code>{winner['user_id']}</code>\n"
-                f"{pe('money')} Получено: <b>{seller_gets} {pe('star')}</b> (−15%)"
-            )
-        else:
-            await send_notification(auc["seller_id"],
-                f"{pe('auction')} <b>Аукцион #{auc['auction_id']} завершён без ставок.</b>\n"
-                f"{pe('nft')} NFT #{auc['nft_id']} остаётся у вас."
-            )
-
-        c.execute("UPDATE auctions SET is_active = 0 WHERE auction_id = ?", (auc["auction_id"],))
-
-    conn.commit()
-    conn.close()
-
-
-# Конец части 4
-# ============================================================
-# ============================================================
-# ЧАСТЬ 5: Крафт, Аренда NFT, Stardom подписка, Лидерборд
-# ============================================================
-
-# ============================================================
-# КРАФТ — КНОПКА МЕНЮ
-# ============================================================
-
-@router.message(F.text.endswith("Крафт"))
-async def show_craft_menu(message: Message):
-    user_id = message.from_user.id
-
-    fee = get_nft_create_fee(user_id)
-    stars = get_stars(user_id)
-
-    text = (
-        f"{pe('craft_btn')} <b>Крафт NFT</b>\n\n"
-        f"{pe('hammer')} Объедините до 4 NFT одного типа редкого подарка\n"
-        f"для создания уникального скрафченного NFT!\n\n"
-        f"<b>{pe('leaderboard')} Шансы успеха:</b>\n"
-        f"├ 1 NFT → <b>20%</b>\n"
-        f"├ 2 NFT → <b>45%</b>\n"
-        f"├ 3 NFT → <b>70%</b>\n"
-        f"└ 4 NFT → <b>95%</b>\n\n"
-        f"{pe('warning')} Все NFT должны быть из одного типа редкого подарка!\n"
-        f"{pe('warning')} Лимитированные подарки нельзя крафтить!\n"
-        f"{pe('warning')} При неудаче все NFT теряются!\n\n"
-        f"{pe('money')} Комиссия крафта: <b>{fee} {pe('star')}</b>\n"
-        f"{pe('money')} Ваш баланс: <b>{stars} {pe('star')}</b>\n\n"
-        f"{pe('nft')} Скрафченный NFT получит характеристики 0% 0% 0%\n"
-        f"и будет помечен как крафтовый {pe('hammer')}"
-    )
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Начать крафт", "craft_start", "craft_btn"))
-    kb.row(make_inline_button("Мои NFT для крафта", "craft_show_nfts_0", "nft"))
-
-    await message.answer(text, reply_markup=kb.as_markup())
-
-
-# ============================================================
-# КРАФТ — НАЧАЛО
-# ============================================================
-
-@router.callback_query(F.data == "craft_start")
-async def craft_start(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        SELECT n.*, i.is_limited 
-        FROM nfts n
-        LEFT JOIN inventory i ON n.nft_id = i.nft_id
-        WHERE n.owner_id = ? 
-        AND (i.is_limited IS NULL OR i.is_limited = 0)
-        AND n.nft_id NOT IN (SELECT nft_id FROM trades WHERE is_active = 1)
-        AND n.nft_id NOT IN (SELECT nft_id FROM auctions WHERE is_active = 1)
-        AND n.nft_id NOT IN (SELECT nft_id FROM nft_rentals WHERE is_active = 1)
-        ORDER BY n.gift_name, n.nft_id
-    """, (user_id,))
-    nfts = [dict(row) for row in c.fetchall()]
-    conn.close()
-
-    if not nfts:
-        await callback.answer(f"{pe_plain('cross')} У вас нет доступных NFT для крафта!", show_alert=True)
-        return
-
-    groups = {}
-    for nft in nfts:
-        name = nft["gift_name"]
-        if name not in groups:
-            groups[name] = []
-        groups[name].append(nft)
-
-    available_groups = {k: v for k, v in groups.items() if len(v) >= 1}
-
-    if not available_groups:
-        await callback.answer(f"{pe_plain('cross')} Нет NFT для крафта!", show_alert=True)
-        return
-
-    await state.set_state(CraftStates.selecting_nfts)
-    await state.update_data(selected_nfts=[], craft_gift_name=None)
-
-    text = f"{pe('craft_btn')} <b>Выберите тип подарка для крафта:</b>\n\n"
-
-    kb = InlineKeyboardBuilder()
-    for name, nft_list in available_groups.items():
-        emoji = nft_list[0]["gift_emoji"]
-        kb.row(make_inline_button(
-            f"{emoji} {name} ({len(nft_list)} шт.)",
-            f"craft_type_{name}", "gift"
-        ))
-
-    kb.row(make_inline_button("Отмена", "craft_cancel", "cross"))
-
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-
-
-# ============================================================
-# КРАФТ — ВЫБОР ТИПА
-# ============================================================
-
-@router.callback_query(F.data.startswith("craft_type_"), CraftStates.selecting_nfts)
-async def craft_select_type(callback: CallbackQuery, state: FSMContext):
-    gift_name = callback.data[len("craft_type_"):]
-    user_id = callback.from_user.id
-
-    await state.update_data(craft_gift_name=gift_name, selected_nfts=[])
-    await show_craft_selection(callback, state, user_id, gift_name)
-
-
-async def show_craft_selection(callback: CallbackQuery, state: FSMContext, user_id: int, gift_name: str):
-    data = await state.get_data()
-    selected = data.get("selected_nfts", [])
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        SELECT n.* FROM nfts n
-        LEFT JOIN inventory i ON n.nft_id = i.nft_id
-        WHERE n.owner_id = ? AND n.gift_name = ?
-        AND (i.is_limited IS NULL OR i.is_limited = 0)
-        AND n.nft_id NOT IN (SELECT nft_id FROM trades WHERE is_active = 1)
-        AND n.nft_id NOT IN (SELECT nft_id FROM auctions WHERE is_active = 1)
-        AND n.nft_id NOT IN (SELECT nft_id FROM nft_rentals WHERE is_active = 1)
-        ORDER BY n.nft_id
-    """, (user_id, gift_name))
-    nfts = [dict(row) for row in c.fetchall()]
-    conn.close()
-
-    chance_map = {0: 0, 1: 20, 2: 45, 3: 70, 4: 95}
-    current_chance = chance_map.get(len(selected), 0)
-
-    text = (
-        f"{pe('craft_btn')} <b>Крафт — {gift_name}</b>\n\n"
-        f"{pe('leaderboard')} Выбрано: <b>{len(selected)}/4</b> NFT\n"
-        f"{pe('pin')} Шанс успеха: <b>{current_chance}%</b>\n\n"
-    )
-
-    if selected:
-        text += f"<b>{pe('check')} Выбранные NFT:</b>\n"
-        for nft_id in selected:
-            nft_info = next((n for n in nfts if n["nft_id"] == nft_id), None)
-            if nft_info:
-                text += (
-                    f"  {pe('nft')} NFT #{nft_id} | {nft_info['model_name']} "
-                    f"({nft_info['model_chance']}%)\n"
-                )
-        text += "\n"
-
-    text += f"<b>{pe('package')} Доступные NFT:</b>\n"
-
-    kb = InlineKeyboardBuilder()
-
-    for nft in nfts:
-        if nft["nft_id"] in selected:
-            continue
-        crafted = f" {pe('hammer')}" if nft["is_crafted"] else ""
-        text += (
-            f"  {pe('nft')} #{nft['nft_id']}{crafted} | "
-            f"{pe('model')}{nft['model_name']}({nft['model_chance']}%) "
-            f"{pe('pattern')}{nft['pattern_name']}({nft['pattern_chance']}%) "
-            f"{pe('background')}{nft['bg_name']}({nft['bg_chance']}%)\n"
-        )
-
-        if len(selected) < 4:
-            kb.row(make_inline_button(
-                f"Добавить NFT #{nft['nft_id']}",
-                f"craft_add_{nft['nft_id']}", "ok"
-            ))
-
-    for nft_id in selected:
-        kb.row(make_inline_button(
-            f"Убрать NFT #{nft_id}",
-            f"craft_remove_{nft_id}", "cross"
-        ))
-
-    if len(selected) >= 1:
-        kb.row(make_inline_button(
-            f"КРАФТИТЬ ({current_chance}% шанс)",
-            "craft_execute", "hammer"
-        ))
-
-    kb.row(make_inline_button("Отмена", "craft_cancel", "cross"))
-
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-# ============================================================
-# КРАФТ — ДОБАВЛЕНИЕ NFT
-# ============================================================
-
-@router.callback_query(F.data.startswith("craft_add_"), CraftStates.selecting_nfts)
-async def craft_add_nft(callback: CallbackQuery, state: FSMContext):
-    nft_id = int(callback.data.split("_")[2])
-    data = await state.get_data()
-    selected = data.get("selected_nfts", [])
-    gift_name = data.get("craft_gift_name")
-
-    if len(selected) >= 4:
-        await callback.answer(f"{pe_plain('cross')} Максимум 4 NFT!", show_alert=True)
-        return
-
-    if nft_id in selected:
-        await callback.answer(f"{pe_plain('cross')} Уже добавлен!", show_alert=True)
-        return
-
-    selected.append(nft_id)
-    await state.update_data(selected_nfts=selected)
-    await show_craft_selection(callback, state, callback.from_user.id, gift_name)
-
-
-# ============================================================
-# КРАФТ — УДАЛЕНИЕ NFT
-# ============================================================
-
-@router.callback_query(F.data.startswith("craft_remove_"), CraftStates.selecting_nfts)
-async def craft_remove_nft(callback: CallbackQuery, state: FSMContext):
-    nft_id = int(callback.data.split("_")[2])
-    data = await state.get_data()
-    selected = data.get("selected_nfts", [])
-    gift_name = data.get("craft_gift_name")
-
-    if nft_id in selected:
-        selected.remove(nft_id)
-    await state.update_data(selected_nfts=selected)
-    await show_craft_selection(callback, state, callback.from_user.id, gift_name)
-
-
-# ============================================================
-# КРАФТ — ВЫПОЛНЕНИЕ
-# ============================================================
-
-@router.callback_query(F.data == "craft_execute", CraftStates.selecting_nfts)
-async def craft_execute(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    data = await state.get_data()
-    selected = data.get("selected_nfts", [])
-    gift_name = data.get("craft_gift_name")
-    await state.clear()
-
-    if not selected:
-        await callback.answer(f"{pe_plain('cross')} Не выбраны NFT!", show_alert=True)
-        return
-
-    fee = get_nft_create_fee(user_id)
-    stars = get_stars(user_id)
-
-    if stars < fee:
-        await callback.answer(f"{pe_plain('cross')} Недостаточно звёзд! Нужно {fee}{pe_plain('star')}", show_alert=True)
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-
-    valid_nfts = []
-    for nft_id in selected:
-        c.execute("SELECT * FROM nfts WHERE nft_id = ? AND owner_id = ?", (nft_id, user_id))
-        nft = c.fetchone()
-        if not nft:
-            conn.close()
-            await callback.message.edit_text(f"{pe('cross')} Один из NFT не найден или не принадлежит вам!")
-            return
-        nft = dict(nft)
-        if nft["gift_name"] != gift_name:
-            conn.close()
-            await callback.message.edit_text(f"{pe('cross')} Все NFT должны быть одного типа!")
-            return
-
-        c.execute("SELECT is_limited FROM inventory WHERE nft_id = ?", (nft_id,))
-        inv = c.fetchone()
-        if inv and inv["is_limited"]:
-            conn.close()
-            await callback.message.edit_text(f"{pe('cross')} Лимитированные подарки нельзя крафтить!")
-            return
-
-        valid_nfts.append(nft)
-
-    chance_map = {1: 20, 2: 45, 3: 70, 4: 95}
-    chance = chance_map.get(len(selected), 20)
-
-    update_stars(user_id, -fee)
-
-    roll = random.randint(1, 100)
-    success = roll <= chance
-
-    if success:
-        for nft_id in selected:
-            c.execute("DELETE FROM nfts WHERE nft_id = ?", (nft_id,))
-            c.execute("DELETE FROM inventory WHERE nft_id = ?", (nft_id,))
-
-        gift_emoji = valid_nfts[0]["gift_emoji"]
-        c.execute(
-            "INSERT INTO nfts (owner_id, gift_name, gift_emoji, model_name, model_chance, "
-            "pattern_name, pattern_chance, bg_name, bg_chance, is_crafted) "
-            "VALUES (?, ?, ?, 'Crafted', 0, 'Crafted', 0, 'Crafted', 0, 1)",
-            (user_id, gift_name, gift_emoji)
-        )
-        new_nft_id = c.lastrowid
-
-        counter = get_next_counter("gift_purchase_counter")
-        c.execute(
-            "INSERT INTO inventory (inv_id, user_id, gift_name, gift_emoji, rarity, is_nft, nft_id) "
-            "VALUES (?, ?, ?, ?, 'rare', 1, ?)",
-            (counter, user_id, gift_name, gift_emoji, new_nft_id)
-        )
-
-        conn.commit()
-        conn.close()
-
-        is_new = grant_achievement(user_id, "first_craft")
-        new_balance = get_stars(user_id)
-
-        result_text = (
-            f"{pe('success')} <b>КРАФТ УСПЕШЕН!</b> {pe('success')}\n\n"
-            f"{pe('hammer')} {gift_emoji} <b>{gift_name}</b> | NFT #{new_nft_id}\n\n"
-            f"<b>{pe('leaderboard')} Характеристики:</b>\n"
-            f"{pe('model')} Модель: <b>Crafted</b> (0%)\n"
-            f"{pe('pattern')} Узор: <b>Crafted</b> (0%)\n"
-            f"{pe('background')} Фон: <b>Crafted</b> (0%)\n\n"
-            f"{pe('hammer')} Помечен как скрафченный\n"
-            f"{pe('id')} Inv ID: <code>{counter}</code>\n"
-            f"{pe('money')} Комиссия: {fee} {pe('star')}\n"
-            f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>\n\n"
-            f"{pe('leaderboard')} Шанс был: {chance}% | Выпало: {roll}"
-        )
-
-        if is_new:
-            result_text += f"\n\n{pe('achieve')} {pe('medal')} <b>Достижение: Первый крафт!</b>"
-
-    else:
-        for nft_id in selected:
-            c.execute("DELETE FROM nfts WHERE nft_id = ?", (nft_id,))
-            c.execute("DELETE FROM inventory WHERE nft_id = ?", (nft_id,))
-
-        conn.commit()
-        conn.close()
-
-        new_balance = get_stars(user_id)
-
-        result_text = (
-            f"{pe('fail')} <b>КРАФТ ПРОВАЛЕН!</b> {pe('fail')}\n\n"
-            f"{pe('cross')} Все {len(selected)} NFT потеряны!\n"
-            f"{pe('money')} Комиссия: {fee} {pe('star')}\n"
-            f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>\n\n"
-            f"{pe('leaderboard')} Шанс был: {chance}% | Выпало: {roll}\n\n"
-            f"Не повезло... Попробуйте снова!"
-        )
-
-    await callback.message.edit_text(result_text)
-
-
-# ============================================================
-# КРАФТ — ОТМЕНА
-# ============================================================
-
-@router.callback_query(F.data == "craft_cancel")
-async def craft_cancel(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text(f"{pe('cross')} Крафт отменён.")
-
-
-# ============================================================
-# КРАФТ — ПОКАЗАТЬ NFT
-# ============================================================
-
-@router.callback_query(F.data.startswith("craft_show_nfts_"))
-async def craft_show_nfts(callback: CallbackQuery):
-    page = int(callback.data.split("_")[3])
-    user_id = callback.from_user.id
-    per_page = 5
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        SELECT n.*, i.is_limited FROM nfts n
-        LEFT JOIN inventory i ON n.nft_id = i.nft_id
-        WHERE n.owner_id = ?
-        AND (i.is_limited IS NULL OR i.is_limited = 0)
-        ORDER BY n.gift_name, n.nft_id
-        LIMIT ? OFFSET ?
-    """, (user_id, per_page, page * per_page))
-    nfts = [dict(row) for row in c.fetchall()]
-
-    c.execute("""
-        SELECT COUNT(*) as cnt FROM nfts n
-        LEFT JOIN inventory i ON n.nft_id = i.nft_id
-        WHERE n.owner_id = ?
-        AND (i.is_limited IS NULL OR i.is_limited = 0)
-    """, (user_id,))
-    total = c.fetchone()["cnt"]
-    conn.close()
-
-    if not nfts:
-        await callback.answer(f"{pe_plain('package')} Нет NFT для крафта!", show_alert=True)
-        return
-
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    text = f"{pe('craft_btn')} <b>NFT для крафта</b> (стр. {page + 1}/{total_pages}):\n\n"
-
-    for nft in nfts:
-        crafted = f" {pe('hammer')}" if nft["is_crafted"] else ""
-        text += (
-            f"{nft['gift_emoji']} <b>{nft['gift_name']}</b> | #{nft['nft_id']}{crafted}\n"
-            f"  {pe('model')}{nft['model_name']}({nft['model_chance']}%) "
-            f"{pe('pattern')}{nft['pattern_name']}({nft['pattern_chance']}%) "
-            f"{pe('background')}{nft['bg_name']}({nft['bg_chance']}%)\n\n"
-        )
-
-    kb = InlineKeyboardBuilder()
-    nav = []
-    if page > 0:
-        nav.append(make_inline_button("Назад", f"craft_show_nfts_{page - 1}", "back"))
-    if (page + 1) * per_page < total:
-        nav.append(make_inline_button("Далее", f"craft_show_nfts_{page + 1}", "next"))
-    if nav:
-        kb.row(*nav)
-
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-# ============================================================
-# АРЕНДА NFT — КОМАНДА
-# ============================================================
-
-@router.message(Command("nft_rental"))
-async def cmd_nft_rental(message: Message):
-    conn = get_db()
-    c = conn.cursor()
-    now = datetime.now().isoformat()
-
-    c.execute("""
-        SELECT r.*, n.gift_name, n.gift_emoji, n.model_name, n.model_chance,
-               n.pattern_name, n.pattern_chance, n.bg_name, n.bg_chance,
-               n.is_crafted, u.first_name
-        FROM nft_rentals r
-        JOIN nfts n ON r.nft_id = n.nft_id
-        JOIN users u ON r.owner_id = u.user_id
-        WHERE r.is_active = 1 AND r.is_rented = 0 AND r.ends_at > ?
-        ORDER BY r.created_at DESC
-        LIMIT 10
-    """, (now,))
-    rentals = [dict(row) for row in c.fetchall()]
-    conn.close()
-
-    text = (
-        f"{pe('rent')} <b>Аренда NFT</b> {pe('house')}\n\n"
-        f"{pe('rules_emoji')} Команды:\n"
-        f"├ /nft_rents &lt;nft_id&gt; &lt;цена/час&gt; &lt;время_окончания&gt;\n"
-        f"├ /rent_nft &lt;rental_id&gt;\n"
-        f"└ /nft_rental — Этот список\n\n"
-        f"{pe('clock')} Доступные периоды: 1ч, 12ч, 24ч, 48ч\n"
-        f"{pe('warning')} Лимитированные NFT нельзя сдавать в аренду!\n\n"
-    )
-
-    if not rentals:
-        text += f"{pe('package')} Нет доступных аренд."
-        await message.answer(text)
-        return
-
-    text += f"<b>{pe('house')} Доступные аренды:</b>\n\n"
-
-    kb = InlineKeyboardBuilder()
-
-    for r in rentals:
-        try:
-            ends = datetime.fromisoformat(r["ends_at"])
-            time_left = ends - datetime.now()
-            hours = int(time_left.total_seconds() // 3600)
-            time_str = f"{hours}ч"
-        except Exception:
-            time_str = "?"
-
-        crafted = f" {pe('hammer')}" if r["is_crafted"] else ""
-
-        text += (
-            f"{'─' * 25}\n"
-            f"{pe('house')} <b>Аренда #{r['rental_id']}</b>\n"
-            f"{r['gift_emoji']} <b>{r['gift_name']}</b> | NFT #{r['nft_id']}{crafted}\n"
-            f"{pe('model')} {r['model_name']} ({r['model_chance']}%)\n"
-            f"{pe('pattern')} {r['pattern_name']} ({r['pattern_chance']}%)\n"
-            f"{pe('background')} {r['bg_name']} ({r['bg_chance']}%)\n"
-            f"{pe('money')} Цена: <b>{r['price_per_hour']} {pe('star')}/час</b>\n"
-            f"{pe('clock')} Доступно ещё: <b>{time_str}</b>\n"
-            f"{pe('seller')} Владелец: {r['first_name']}\n\n"
-        )
-
-        kb.row(make_inline_button(
-            f"Арендовать #{r['rental_id']}",
-            f"rent_choose_{r['rental_id']}", "rent"
-        ))
-
-    await message.answer(text, reply_markup=kb.as_markup())
-
-
-# ============================================================
-# СДАТЬ NFT В АРЕНДУ — /nft_rents
-# ============================================================
-
-@router.message(Command("nft_rents"))
-async def cmd_nft_rents(message: Message, command: CommandObject):
-    user_id = message.from_user.id
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /nft_rents <nft_id> <цена_за_час> <время_окончания>\n"
-            f"Пример: /nft_rents 5 10 2025-01-20 18:00"
-        )
-        return
-
-    parts = command.args.strip().split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer(f"{pe('cross')} Недостаточно параметров!")
-        return
-
-    try:
-        nft_id = int(parts[0])
-        price_per_hour = int(parts[1])
-        ends_str = parts[2]
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    if price_per_hour < 1:
-        await message.answer(f"{pe('cross')} Цена должна быть минимум 1 {pe('star')}/час!")
-        return
-
-    try:
-        ends_at = datetime.fromisoformat(ends_str)
-    except Exception:
-        try:
-            ends_at = datetime.strptime(ends_str, "%Y-%m-%d %H:%M")
-        except Exception:
-            await message.answer(f"{pe('cross')} Некорректный формат даты!")
-            return
-
-    max_end = datetime.now() + timedelta(hours=48)
-    if ends_at > max_end:
-        await message.answer(f"{pe('cross')} Максимальное время аренды — 48 часов!")
-        return
-
-    if ends_at <= datetime.now():
-        await message.answer(f"{pe('cross')} Время должно быть в будущем!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT * FROM nfts WHERE nft_id = ? AND owner_id = ?", (nft_id, user_id))
-    nft = c.fetchone()
-    if not nft:
-        conn.close()
-        await message.answer(f"{pe('cross')} NFT не найден или не принадлежит вам!")
-        return
-    nft = dict(nft)
-
-    c.execute("SELECT is_limited FROM inventory WHERE nft_id = ?", (nft_id,))
-    inv = c.fetchone()
-    if inv and inv["is_limited"]:
-        conn.close()
-        await message.answer(f"{pe('cross')} Лимитированные NFT нельзя сдавать в аренду!")
-        return
-
-    c.execute("SELECT rental_id FROM nft_rentals WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот NFT уже сдан в аренду!")
-        return
-
-    c.execute("SELECT trade_id FROM trades WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот NFT на торговле!")
-        return
-
-    c.execute("SELECT auction_id FROM auctions WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} Этот NFT на аукционе!")
-        return
-
-    c.execute(
-        "INSERT INTO nft_rentals (owner_id, nft_id, price_per_hour, ends_at) VALUES (?, ?, ?, ?)",
-        (user_id, nft_id, price_per_hour, ends_at.isoformat())
-    )
-    rental_id = c.lastrowid
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('rent')} <b>NFT выставлен на аренду!</b>\n\n"
-        f"{nft['gift_emoji']} <b>{nft['gift_name']}</b> | NFT #{nft_id}\n"
-        f"{pe('money')} Цена: <b>{price_per_hour} {pe('star')}/час</b>\n"
-        f"{pe('clock')} До: <b>{ends_at.strftime('%d.%m.%Y %H:%M')}</b>\n"
-        f"{pe('house')} Rental ID: <code>{rental_id}</code>"
-    )
-
-
-# ============================================================
-# АРЕНДОВАТЬ — ВЫБОР ПЕРИОДА
-# ============================================================
-
-@router.callback_query(F.data.startswith("rent_choose_"))
-async def rent_choose_duration(callback: CallbackQuery):
-    rental_id = int(callback.data.split("_")[2])
-
-    kb = InlineKeyboardBuilder()
-    for hours in [1, 12, 24, 48]:
-        label = f"{hours} час" if hours == 1 else f"{hours} часов"
-        kb.row(make_inline_button(label, f"rent_confirm_{rental_id}_{hours}", "clock"))
-    kb.row(make_inline_button("Отмена", "rent_cancel", "cross"))
-
-    await callback.message.edit_text(
-        f"{pe('rent')} <b>Выберите период аренды:</b>",
-        reply_markup=kb.as_markup()
-    )
-
-
-@router.callback_query(F.data == "rent_cancel")
-async def rent_cancel(callback: CallbackQuery):
-    await callback.message.edit_text(f"{pe('cross')} Аренда отменена.")
-
-
-# ============================================================
-# АРЕНДОВАТЬ — ПОДТВЕРЖДЕНИЕ
-# ============================================================
-
-@router.callback_query(F.data.startswith("rent_confirm_"))
-async def rent_confirm(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    rental_id = int(parts[2])
-    hours = int(parts[3])
-    user_id = callback.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM nft_rentals WHERE rental_id = ? AND is_active = 1 AND is_rented = 0", (rental_id,))
-    rental = c.fetchone()
-
-    if not rental:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Аренда не найдена!", show_alert=True)
-        return
-
-    rental = dict(rental)
-
-    if rental["owner_id"] == user_id:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Нельзя арендовать свой NFT!", show_alert=True)
-        return
-
-    total_cost = rental["price_per_hour"] * hours
-    stars = get_stars(user_id)
-
-    if stars < total_cost:
-        conn.close()
-        await callback.answer(
-            f"{pe_plain('cross')} Недостаточно звёзд! Нужно {total_cost}{pe_plain('star')}",
-            show_alert=True
-        )
-        return
-
-    update_stars(user_id, -total_cost)
-    update_stars(rental["owner_id"], total_cost)
-
-    rent_ends = datetime.now() + timedelta(hours=hours)
-    c.execute(
-        "UPDATE nft_rentals SET is_rented = 1, renter_id = ?, rent_started = ?, rent_ends = ? "
-        "WHERE rental_id = ?",
-        (user_id, datetime.now().isoformat(), rent_ends.isoformat(), rental_id)
-    )
-    conn.commit()
-    conn.close()
-
-    new_balance = get_stars(user_id)
-    hours_label = f"{hours} час" if hours == 1 else f"{hours} часов"
-
-    await callback.message.edit_text(
-        f"{pe('check')} <b>NFT арендован!</b>\n\n"
-        f"{pe('house')} Аренда #{rental_id}\n"
-        f"{pe('clock')} На: <b>{hours_label}</b>\n"
-        f"{pe('clock')} До: <b>{rent_ends.strftime('%d.%m.%Y %H:%M')}</b>\n"
-        f"{pe('money')} Оплачено: <b>{total_cost} {pe('star')}</b>\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>"
-    )
-
-    await send_notification(rental["owner_id"],
-        f"{pe('rent')} <b>Ваш NFT арендован!</b>\n\n"
-        f"{pe('house')} Аренда #{rental_id}\n"
-        f"{pe('profile')} Арендатор: <code>{user_id}</code>\n"
-        f"{pe('clock')} На: {hours_label}\n"
-        f"{pe('money')} Получено: <b>{total_cost} {pe('star')}</b>"
-    )
-
-
-# ============================================================
-# /rent_nft КОМАНДА
-# ============================================================
-
-@router.message(Command("rent_nft"))
-async def cmd_rent_nft(message: Message, command: CommandObject):
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /rent_nft <rental_id>")
-        return
-
-    try:
-        rental_id = int(command.args.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный ID!")
-        return
-
-    kb = InlineKeyboardBuilder()
-    for hours in [1, 12, 24, 48]:
-        label = f"{hours} час" if hours == 1 else f"{hours} часов"
-        kb.row(make_inline_button(label, f"rent_confirm_{rental_id}_{hours}", "clock"))
-    kb.row(make_inline_button("Отмена", "rent_cancel", "cross"))
-
-    await message.answer(
-        f"{pe('rent')} <b>Аренда #{rental_id}</b>\n\nВыберите период:",
-        reply_markup=kb.as_markup()
-    )
-
-
-# ============================================================
-# ПРОВЕРКА АРЕНД (фоновая задача)
-# ============================================================
-
-async def check_rentals():
-    conn = get_db()
-    c = conn.cursor()
-    now = datetime.now().isoformat()
-
-    c.execute(
-        "SELECT * FROM nft_rentals WHERE is_rented = 1 AND rent_ends <= ? AND is_active = 1",
-        (now,)
-    )
-    expired = [dict(row) for row in c.fetchall()]
-
-    for rental in expired:
-        c.execute("UPDATE nft_rentals SET is_active = 0 WHERE rental_id = ?", (rental["rental_id"],))
-
-        await send_notification(rental["renter_id"],
-            f"{pe('rent')} <b>Аренда завершена!</b>\n\n"
-            f"{pe('house')} Аренда #{rental['rental_id']} истекла."
-        )
-        await send_notification(rental["owner_id"],
-            f"{pe('rent')} <b>Аренда вашего NFT завершена!</b>\n\n"
-            f"{pe('house')} Аренда #{rental['rental_id']}\n"
-            f"{pe('nft')} NFT #{rental['nft_id']} снова доступен."
-        )
-
-    c.execute(
-        "SELECT * FROM nft_rentals WHERE is_rented = 0 AND ends_at <= ? AND is_active = 1",
-        (now,)
-    )
-    expired_listings = [dict(row) for row in c.fetchall()]
-    for listing in expired_listings:
-        c.execute("UPDATE nft_rentals SET is_active = 0 WHERE rental_id = ?", (listing["rental_id"],))
-
-    conn.commit()
-    conn.close()
-
-
-# ============================================================
-# STARDOM — КНОПКА МЕНЮ
-# ============================================================
-
-@router.message(F.text.endswith("Stardom"))
-async def show_stardom_menu(message: Message):
-    user_id = message.from_user.id
-    current_level = get_user_stardom(user_id)
-    user = get_user(user_id)
-
-    text = f"{pe('stardom')} <b>Stardom — Система подписок</b> {pe('sparkles')}\n\n"
-
-    if current_level > 0:
-        sd = STARDOM_LEVELS[current_level]
-        text += (
-            f"{pe('check')} Ваш текущий уровень: <b>{sd['name']}</b>\n"
-            f"{pe('date')} Действует до: <b>{user.get('stardom_expires', '?')[:10]}</b>\n\n"
-        )
-    else:
-        text += f"{pe('cross')} У вас нет Stardom подписки.\n\n"
-
-    text += f"{pe('money')} Баланс: <b>{user['stars']} {pe('star')}</b>\n\n"
-
-    kb = InlineKeyboardBuilder()
-
-    for level, sd in STARDOM_LEVELS.items():
-        is_current = level == current_level
-        status = f" {pe('check')} ТЕКУЩИЙ" if is_current else ""
-
-        spark_key = f"spark{level}"
-        spark = pe(spark_key)
-
-        text += (
-            f"{'─' * 28}\n"
-            f"{spark * level} <b>{sd['name']}</b>{status}\n"
-            f"{pe('money')} Цена: <b>{sd['price']} {pe('star')}</b> на {sd['duration_months']} мес.\n"
-            f"├ Комиссия NFT: <b>{sd['nft_create_fee']} {pe('star')}</b>\n"
-            f"├ Передача NFT: <b>{sd['nft_transfer_fee']} {pe('star')}</b>\n"
-            f"├ Передача подарка: <b>{sd['gift_transfer_fee']} {pe('star')}</b>\n"
-            f"└ Подарок: {sd['exclusive_emoji']} <b>{sd['exclusive_gift']}</b>\n\n"
-        )
-
-        if not is_current:
-            kb.row(make_inline_button(
-                f"{sd['name']} — {sd['price']}{pe_plain('star')}",
-                f"buy_stardom_{level}", "stardom"
-            ))
-
-    await message.answer(text, reply_markup=kb.as_markup())
-
-
-# ============================================================
-# ПОКУПКА STARDOM
-# ============================================================
-
-@router.callback_query(F.data.startswith("buy_stardom_"))
-async def buy_stardom(callback: CallbackQuery):
-    level = int(callback.data.split("_")[2])
-    user_id = callback.from_user.id
-
-    if level not in STARDOM_LEVELS:
-        await callback.answer(f"{pe_plain('cross')} Неизвестный уровень!", show_alert=True)
-        return
-
-    sd = STARDOM_LEVELS[level]
-    stars = get_stars(user_id)
-
-    if stars >= sd["price"]:
-        update_stars(user_id, -sd["price"])
-        await activate_stardom(user_id, level)
-
-        kb = InlineKeyboardBuilder()
-        kb.row(make_inline_button("К Stardom", "back_stardom", "back"))
-
-        await callback.message.edit_text(
-            f"{pe('check')} <b>Stardom {sd['name']} активирован!</b>\n\n"
-            f"{pe('money')} Списано: <b>{sd['price']} {pe('star')}</b>",
-            reply_markup=kb.as_markup()
-        )
-    else:
-        try:
-            await bot.send_invoice(
-                chat_id=user_id,
-                title=f"Stardom {sd['name']}",
-                description=f"Подписка {sd['name']} на {sd['duration_months']} месяцев",
-                payload=f"stardom_{level}",
-                provider_token="",
-                currency="XTR",
-                prices=[LabeledPrice(label=sd["name"], amount=sd["price"])]
-            )
-            await callback.answer(f"{pe_plain('topup')} Счёт отправлен!", show_alert=True)
-        except Exception as e:
-            await callback.answer(f"{pe_plain('cross')} Ошибка: {e}", show_alert=True)
-
-
-@router.callback_query(F.data == "back_stardom")
-async def back_stardom(callback: CallbackQuery):
-    await callback.message.delete()
-    user_id = callback.from_user.id
-    current_level = get_user_stardom(user_id)
-    user = get_user(user_id)
-
-    text = f"{pe('stardom')} <b>Stardom</b> {pe('sparkles')}\n\n"
-    if current_level > 0:
-        sd = STARDOM_LEVELS[current_level]
-        text += f"{pe('check')} Текущий: <b>{sd['name']}</b>\n"
-
-    text += f"{pe('money')} Баланс: <b>{user['stars']} {pe('star')}</b>"
-
-    await bot.send_message(user_id, text, reply_markup=get_main_keyboard())
-
-
-# ============================================================
-# ЛИДЕРБОРД / ТОП
-# ============================================================
-
-@router.message(F.text.endswith("Топ"))
-async def show_leaderboard(message: Message):
-    text = (
-        f"{pe('trophy')} <b>Лидерборд</b>\n\n"
-        f"Выберите категорию:"
-    )
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Топ по балансу", "top_balance", "money"))
-    kb.row(make_inline_button("Топ по кол-ву NFT", "top_nfts", "nft"))
-    kb.row(make_inline_button("Топ по редкости коллекции", "top_rarity", "gem"))
-
-    await message.answer(text, reply_markup=kb.as_markup())
-
-
-@router.callback_query(F.data == "top_balance")
-async def top_balance(callback: CallbackQuery):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT user_id, first_name, username, stars FROM users ORDER BY stars DESC LIMIT 10")
-    users = [dict(row) for row in c.fetchall()]
-    conn.close()
-
-    text = f"{pe('trophy')} <b>Топ 10 по балансу</b> {pe('money')}\n\n"
-    medals = [pe('winner'), pe('medal'), pe('medal')]
-
-    for i, u in enumerate(users):
-        medal = medals[i] if i < 3 else f"{i + 1}."
-        name = u["first_name"] or "?"
-        uname = f" (@{u['username']})" if u["username"] else ""
-        text += f"{medal} <b>{name}</b>{uname} — <b>{u['stars']} {pe('star')}</b>\n"
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Назад", "back_top", "back"))
-
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-@router.callback_query(F.data == "top_nfts")
-async def top_nfts(callback: CallbackQuery):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        SELECT n.owner_id, u.first_name, u.username, COUNT(*) as nft_count
-        FROM nfts n
-        JOIN users u ON n.owner_id = u.user_id
-        GROUP BY n.owner_id
-        ORDER BY nft_count DESC
-        LIMIT 10
-    """)
-    users = [dict(row) for row in c.fetchall()]
-    conn.close()
-
-    text = f"{pe('trophy')} <b>Топ 10 по количеству NFT</b> {pe('nft')}\n\n"
-    medals = [pe('winner'), pe('medal'), pe('medal')]
-
-    if not users:
-        text += f"{pe('package')} Ни у кого нет NFT."
-    else:
-        for i, u in enumerate(users):
-            medal = medals[i] if i < 3 else f"{i + 1}."
-            name = u["first_name"] or "?"
-            text += f"{medal} <b>{name}</b> — <b>{u['nft_count']} NFT</b>\n"
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Назад", "back_top", "back"))
-
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-@router.callback_query(F.data == "top_rarity")
-async def top_rarity(callback: CallbackQuery):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        SELECT n.owner_id, u.first_name, u.username,
-               MIN(n.model_chance + n.pattern_chance + n.bg_chance) as min_rarity,
-               COUNT(*) as nft_count
-        FROM nfts n
-        JOIN users u ON n.owner_id = u.user_id
-        GROUP BY n.owner_id
-        ORDER BY min_rarity ASC, nft_count DESC
-        LIMIT 10
-    """)
-    users = [dict(row) for row in c.fetchall()]
-    conn.close()
-
-    text = f"{pe('trophy')} <b>Топ 10 по редкости коллекции</b> {pe('gem')}\n\n"
-    medals = [pe('winner'), pe('medal'), pe('medal')]
-
-    if not users:
-        text += f"{pe('package')} Ни у кого нет NFT."
-    else:
-        for i, u in enumerate(users):
-            medal = medals[i] if i < 3 else f"{i + 1}."
-            name = u["first_name"] or "?"
-            rarity = u["min_rarity"]
-            text += f"{medal} <b>{name}</b> — мин. редкость: <b>{rarity}%</b> ({u['nft_count']} NFT)\n"
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Назад", "back_top", "back"))
-
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-@router.callback_query(F.data == "back_top")
-async def back_top(callback: CallbackQuery):
-    text = (
-        f"{pe('trophy')} <b>Лидерборд</b>\n\n"
-        f"Выберите категорию:"
-    )
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button("Топ по балансу", "top_balance", "money"))
-    kb.row(make_inline_button("Топ по кол-ву NFT", "top_nfts", "nft"))
-    kb.row(make_inline_button("Топ по редкости коллекции", "top_rarity", "gem"))
-
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    except Exception:
-        await callback.answer()
-
-
-# Конец части 5
-# ============================================================
-# ============================================================
-# ЧАСТЬ 6: Админ-команды, Модераторы, Баны, Правила, Аппеляции
-# ============================================================
-
-# ============================================================
-# /add_gift — Добавить подарок в магазин
-# ============================================================
-
-@router.message(Command("add_gift"))
-async def cmd_add_gift(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /add_gift <название> <эмодзи> <кол-во> <цена> <редкость>\n"
-            f"Пример: /add_gift Роза 🌹 0 50 common\n"
-            f"Пример: /add_gift Дракон 🐉 100 200 rare\n"
-            f"• Кол-во 0 = неограничено\n"
-            f"• Редкость: common или rare"
-        )
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 5:
-        await message.answer(f"{pe('cross')} Недостаточно параметров! Нужно: название эмодзи кол-во цена редкость")
-        return
-
-    name = parts[0]
-    emoji = parts[1]
-    try:
-        quantity = int(parts[2])
-        price = int(parts[3])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Кол-во и цена должны быть числами!")
-        return
-
-    rarity = parts[4].lower()
-    if rarity not in ("common", "rare"):
-        await message.answer(f"{pe('cross')} Редкость должна быть 'common' или 'rare'!")
-        return
-
-    if price < 1:
-        await message.answer(f"{pe('cross')} Цена должна быть минимум 1 {pe('star')}!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO gifts (name, emoji, quantity, price, rarity) VALUES (?, ?, ?, ?, ?)",
-        (name, emoji, quantity, price, rarity)
-    )
-    gift_id = c.lastrowid
-    conn.commit()
-    conn.close()
-
-    qty_text = "∞" if quantity == 0 else str(quantity)
-    market = "Маркет #1" if rarity == "common" else "Маркет #2"
-    rarity_e = pe('common') if rarity == "common" else pe('rare')
-
-    await message.answer(
-        f"{pe('check')} <b>Подарок добавлен!</b>\n\n"
-        f"{rarity_e} {emoji} <b>{name}</b>\n"
-        f"{pe('money')} Цена: <b>{price} {pe('star')}</b>\n"
-        f"{pe('package')} Кол-во: <b>{qty_text}</b>\n"
-        f"{pe('leaderboard')} Редкость: <b>{rarity}</b>\n"
-        f"{pe('market')} Появится в: <b>{market}</b>\n"
-        f"{pe('id')} Gift ID: <code>{gift_id}</code>"
-    )
-
-
-# ============================================================
-# /del_gift — Удалить подарок из магазина
-# ============================================================
-
-@router.message(Command("del_gift"))
-async def cmd_del_gift(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /del_gift <gift_id>")
-        return
-
-    try:
-        gift_id = int(command.args.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный ID!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM gifts WHERE gift_id = ?", (gift_id,))
-    gift = c.fetchone()
-
-    if not gift:
-        conn.close()
-        await message.answer(f"{pe('cross')} Подарок не найден!")
-        return
-
-    gift = dict(gift)
-    c.execute("UPDATE gifts SET is_active = 0 WHERE gift_id = ?", (gift_id,))
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('check')} <b>Подарок удалён из магазина!</b>\n\n"
-        f"{gift['emoji']} <b>{gift['name']}</b> ({pe('id')} {gift_id})"
-    )
-
-
-# ============================================================
-# /add_limit — Добавить лимитированный подарок
-# ============================================================
-
-@router.message(Command("add_limit"))
-async def cmd_add_limit(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /add_limit <название> <эмодзи> <цена> <дата_истечения>\n"
-            f"Пример: /add_limit НГПодарок 🎄 100 2025-01-31 23:59"
-        )
-        return
-
-    parts = command.args.strip().split(maxsplit=3)
-    if len(parts) < 4:
-        await message.answer(f"{pe('cross')} Недостаточно параметров!")
-        return
-
-    name = parts[0]
-    emoji = parts[1]
-    try:
-        price = int(parts[2])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Цена должна быть числом!")
-        return
-
-    expires_str = parts[3]
-    try:
-        expires_at = datetime.fromisoformat(expires_str)
-    except Exception:
-        try:
-            expires_at = datetime.strptime(expires_str, "%Y-%m-%d %H:%M")
-        except Exception:
-            await message.answer(f"{pe('cross')} Некорректный формат даты! YYYY-MM-DD HH:MM")
-            return
-
-    if expires_at <= datetime.now():
-        await message.answer(f"{pe('cross')} Дата должна быть в будущем!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO limited_gifts (name, emoji, price, expires_at) VALUES (?, ?, ?, ?)",
-        (name, emoji, price, expires_at.isoformat())
-    )
-    limit_id = c.lastrowid
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('check')} <b>Лимитированный подарок добавлен!</b>\n\n"
-        f"{pe('limit')} {emoji} <b>{name}</b>\n"
-        f"{pe('money')} Цена: <b>{price} {pe('star')}</b>\n"
-        f"{pe('date')} Истекает: <b>{expires_at.strftime('%d.%m.%Y %H:%M')}</b>\n"
-        f"{pe('id')} Limit ID: <code>{limit_id}</code>\n\n"
-        f"Появится в <b>{pe('market2')} Маркет #2</b>"
-    )
-
-
-# ============================================================
-# /give_stars / /remove_stars
-# ============================================================
-
-@router.message(Command("give_stars"))
-async def cmd_give_stars(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /give_stars <user_id> <кол-во>")
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Укажите user_id и количество!")
-        return
-
-    try:
-        target_id = int(parts[0])
-        amount = int(parts[1])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    target = get_user(target_id)
-    if not target:
-        await message.answer(f"{pe('cross')} Пользователь не найден!")
-        return
-
-    update_stars(target_id, amount)
-    new_balance = get_stars(target_id)
-
-    await message.answer(
-        f"{pe('check')} <b>Звёзды выданы!</b>\n\n"
-        f"{pe('profile')} {target['first_name']} (<code>{target_id}</code>)\n"
-        f"{pe('money')} +{amount} {pe('star')}\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>"
-    )
-
-    await send_notification(target_id,
-        f"{pe('star')} <b>Вам начислены звёзды!</b>\n\n"
-        f"{pe('money')} +{amount} {pe('star')}\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>\n"
-        f"{pe('moder')} От: Администрация"
-    )
-
-
-@router.message(Command("remove_stars"))
-async def cmd_remove_stars(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /remove_stars <user_id> <кол-во>")
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Укажите user_id и количество!")
-        return
-
-    try:
-        target_id = int(parts[0])
-        amount = int(parts[1])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    target = get_user(target_id)
-    if not target:
-        await message.answer(f"{pe('cross')} Пользователь не найден!")
-        return
-
-    update_stars(target_id, -amount)
-    new_balance = get_stars(target_id)
-
-    await message.answer(
-        f"{pe('check')} <b>Звёзды списаны!</b>\n\n"
-        f"{pe('profile')} {target['first_name']} (<code>{target_id}</code>)\n"
-        f"{pe('money')} -{amount} {pe('star')}\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>"
-    )
-
-
-# ============================================================
-# /give_gift — Подарить подарок пользователю
-# ============================================================
-
-@router.message(Command("give_gift"))
-async def cmd_give_gift(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /give_gift <название> <user_id>")
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Укажите название и user_id!")
-        return
-
-    name = parts[0]
-    try:
-        target_id = int(parts[1])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный user_id!")
-        return
-
-    target = get_user(target_id)
-    if not target:
-        await message.answer(f"{pe('cross')} Пользователь не найден!")
-        return
-
-    counter = get_next_counter("gift_purchase_counter")
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO inventory (inv_id, user_id, gift_name, gift_emoji, rarity) VALUES (?, ?, ?, '🎁', 'common')",
-        (counter, target_id, name)
-    )
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('check')} <b>Подарок выдан!</b>\n\n"
-        f"{pe('gift')} <b>{name}</b> → {target['first_name']} (<code>{target_id}</code>)\n"
-        f"{pe('id')} Inv ID: <code>{counter}</code>"
-    )
-
-    await send_notification(target_id,
-        f"{pe('gift')} <b>Вам выдан подарок от администрации!</b>\n\n"
-        f"{pe('gift')} <b>{name}</b>\n"
-        f"{pe('id')} Inv ID: <code>{counter}</code>"
-    )
-
-
-# ============================================================
-# /remove_gift — Удалить подарок из инвентаря
-# ============================================================
-
-@router.message(Command("remove_gift"))
-async def cmd_remove_gift(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /remove_gift <user_id> <inv_id>")
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Укажите user_id и inv_id!")
-        return
-
-    try:
-        target_id = int(parts[0])
-        inv_id = int(parts[1])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM inventory WHERE inv_id = ? AND user_id = ?", (inv_id, target_id))
-    item = c.fetchone()
-
-    if not item:
-        conn.close()
-        await message.answer(f"{pe('cross')} Подарок не найден в инвентаре!")
-        return
-
-    item = dict(item)
-    c.execute("DELETE FROM inventory WHERE inv_id = ?", (inv_id,))
-
-    if item["nft_id"]:
-        c.execute("DELETE FROM nfts WHERE nft_id = ?", (item["nft_id"],))
-
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('check')} <b>Подарок удалён!</b>\n\n"
-        f"{item['gift_emoji']} <b>{item['gift_name']}</b>\n"
-        f"{pe('id')} Inv ID: {inv_id} | User: {target_id}"
-    )
-
-
-# ============================================================
-# /give_nft — Выдать NFT
-# ============================================================
-
-@router.message(Command("give_nft"))
-async def cmd_give_nft(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /give_nft <user_id> <gift_name> <% модели> <% узора> <% фона>\n"
-            f"Пример: /give_nft 123456 Дракон 0.5 1.0 0.3"
-        )
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 5:
-        await message.answer(f"{pe('cross')} Недостаточно параметров!")
-        return
-
-    try:
-        target_id = int(parts[0])
-        gift_name = parts[1]
-        model_chance = float(parts[2])
-        pattern_chance = float(parts[3])
-        bg_chance = float(parts[4])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    target = get_user(target_id)
-    if not target:
-        await message.answer(f"{pe('cross')} Пользователь не найден!")
-        return
-
-    model = min(NFT_MODELS, key=lambda x: abs(x["chance"] - model_chance))
-    pattern = min(NFT_PATTERNS, key=lambda x: abs(x["chance"] - pattern_chance))
-    bg = min(NFT_BACKGROUNDS, key=lambda x: abs(x["chance"] - bg_chance))
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO nfts (owner_id, gift_name, gift_emoji, model_name, model_chance, "
-        "pattern_name, pattern_chance, bg_name, bg_chance) "
-        "VALUES (?, ?, '🎁', ?, ?, ?, ?, ?, ?)",
-        (target_id, gift_name, model["name"], model["chance"],
-         pattern["name"], pattern["chance"], bg["name"], bg["chance"])
-    )
-    nft_id = c.lastrowid
-
-    counter = get_next_counter("gift_purchase_counter")
-    c.execute(
-        "INSERT INTO inventory (inv_id, user_id, gift_name, gift_emoji, rarity, is_nft, nft_id) "
-        "VALUES (?, ?, ?, '🎁', 'rare', 1, ?)",
-        (counter, target_id, gift_name, nft_id)
-    )
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('check')} <b>NFT выдан!</b>\n\n"
-        f"{pe('nft')} <b>{gift_name}</b> | NFT #{nft_id}\n"
-        f"{pe('model')} {model['name']} ({model['chance']}%)\n"
-        f"{pe('pattern')} {pattern['name']} ({pattern['chance']}%)\n"
-        f"{pe('background')} {bg['name']} ({bg['chance']}%)\n"
-        f"{pe('profile')} → {target['first_name']} (<code>{target_id}</code>)"
-    )
-
-    await send_notification(target_id,
-        f"{pe('nft')} <b>Вам выдан NFT от администрации!</b>\n\n"
-        f"{pe('nft')} <b>{gift_name}</b> | NFT #{nft_id}\n"
-        f"{pe('model')} {model['name']} ({model['chance']}%)\n"
-        f"{pe('pattern')} {pattern['name']} ({pattern['chance']}%)\n"
-        f"{pe('background')} {bg['name']} ({bg['chance']}%)"
-    )
-
-
-# ============================================================
-# /remove_nft — Удалить NFT
-# ============================================================
-
-@router.message(Command("remove_nft"))
-async def cmd_remove_nft(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /remove_nft <nft_id>")
-        return
-
-    try:
-        nft_id = int(command.args.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный ID!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM nfts WHERE nft_id = ?", (nft_id,))
-    nft = c.fetchone()
-
-    if not nft:
-        conn.close()
-        await message.answer(f"{pe('cross')} NFT не найден!")
-        return
-
-    nft = dict(nft)
-    c.execute("DELETE FROM nfts WHERE nft_id = ?", (nft_id,))
-    c.execute("DELETE FROM inventory WHERE nft_id = ?", (nft_id,))
-    c.execute("UPDATE trades SET is_active = 0 WHERE nft_id = ?", (nft_id,))
-    c.execute("UPDATE auctions SET is_active = 0 WHERE nft_id = ?", (nft_id,))
-    c.execute("UPDATE nft_rentals SET is_active = 0 WHERE nft_id = ?", (nft_id,))
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('check')} <b>NFT удалён!</b>\n\n"
-        f"{pe('nft')} <b>{nft['gift_name']}</b> | NFT #{nft_id}\n"
-        f"{pe('profile')} Владелец был: <code>{nft['owner_id']}</code>"
-    )
-
-
-# ============================================================
-# /ban / /unban
-# ============================================================
-
-@router.message(Command("ban"))
-async def cmd_ban(message: Message, command: CommandObject):
-    uid = message.from_user.id
-
-    if not is_admin(uid) and not is_moderator(uid):
-        await message.answer(f"{pe('ban_emoji')} Только для модераторов и админов!")
-        return
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /ban <user_id> <срок> <причина>\n"
-            f"Срок: permanent или часы (например 12)\n"
-            f"Пример: /ban 123456 24 Спам"
-        )
-        return
-
-    parts = command.args.strip().split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer(f"{pe('cross')} Укажите user_id, срок и причину!")
-        return
-
-    try:
-        target_id = int(parts[0])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный user_id!")
-        return
-
-    duration_str = parts[1]
-    reason = parts[2]
-
-    target = get_user(target_id)
-    if not target:
-        await message.answer(f"{pe('cross')} Пользователь не найден!")
-        return
-
-    if is_admin(target_id):
-        await message.answer(f"{pe('cross')} Нельзя забанить администратора!")
-        return
-
-    if is_moderator(uid) and not is_admin(uid):
-        if duration_str == "permanent":
-            await message.answer(f"{pe('cross')} Модераторы не могут банить перманентно!")
-            return
-
-        try:
-            hours = int(duration_str)
-            if hours > 12:
-                await message.answer(f"{pe('cross')} Модераторы могут банить максимум на 12 часов!")
+        @client.on(events.NewMessage(incoming=True))
+        async def handler(event):
+            if not event.message or not event.message.text:
                 return
-        except ValueError:
-            await message.answer(f"{pe('cross')} Некорректный срок!")
-            return
+            text = event.message.text.lower()
+            for keyword, response in rules.items():
+                if keyword in text:
+                    await event.reply(response)
+                    print(f"  {C.G}↩️ Ответил на '{keyword}'{C.RST}")
+                    break
 
-        conn = get_db()
-        c = conn.cursor()
-        week_ago = (datetime.now() - timedelta(days=7)).isoformat()
-        c.execute(
-            "SELECT COUNT(*) as cnt FROM moder_ban_log WHERE moder_id = ? AND target_id = ? AND banned_at > ?",
-            (uid, target_id, week_ago)
-        )
-        ban_count = c.fetchone()["cnt"]
+        await client.run_until_disconnected()
+    except KeyboardInterrupt:
+        print(f"\n{C.Y}⏹ Авто-ответчик остановлен{C.RST}")
+    finally:
+        await client.disconnect()
 
-        if ban_count >= 2:
-            conn.close()
-            await message.answer(f"{pe('cross')} Вы уже забанили этого пользователя 2 раза на этой неделе!")
-            return
+# ─────────────────────────────────────────────────────────────
+# 34. АВТО-ПОСТИНГ
+# ─────────────────────────────────────────────────────────────
 
-        c.execute("INSERT INTO moder_ban_log (moder_id, target_id) VALUES (?, ?)", (uid, target_id))
-        conn.commit()
-        conn.close()
+async def action_auto_posting():
+    target = ask("Канал для постинга (@username): ")
+    parsed = parse_tg_link(target)
+    if not parsed["channel"]:
+        return
 
-    if duration_str == "permanent":
-        ban_until = "permanent"
-        ban_display = "Бессрочно"
+    print(f"{C.Y}  Введи посты (каждый с новой строки, пустая = конец):{C.RST}")
+    posts = []
+    while True:
+        p = input("  > ").strip()
+        if not p:
+            break
+        posts.append(p)
+    if not posts:
+        return
+
+    interval = ask_int("Интервал (минуты): ", 60)
+
+    sessions = get_sessions()
+    if not sessions:
+        return
+
+    proxies = load_proxies()
+    proxy = proxies[0] if proxies else None
+    client = await create_client(sessions[0], proxy)
+    if not await safe_connect(client, sessions[0]):
+        return
+
+    print(f"\n{C.G}📝 Авто-постинг запущен. Ctrl+C для остановки{C.RST}")
+    print(f"  Постов: {len(posts)} | Интервал: {interval} мин")
+
+    try:
+        entity = await resolve_channel(client, parsed["channel"])
+        idx = 0
+        while True:
+            post = posts[idx % len(posts)]
+            await client.send_message(entity, post)
+            print(f"  {C.G}📤 Пост #{idx+1}: {post[:50]}...{C.RST}")
+            idx += 1
+            await asyncio.sleep(interval * 60)
+    except KeyboardInterrupt:
+        print(f"\n{C.Y}⏹ Авто-постинг остановлен{C.RST}")
+    finally:
+        await client.disconnect()
+
+# ─────────────────────────────────────────────────────────────
+# 35. ЗАДАЧИ ИЗ JSON
+# ─────────────────────────────────────────────────────────────
+
+async def action_tasks_from_json():
+    """
+    Формат JSON:
+    {
+      "tasks": [
+        {"action": "subscribe", "channel": "@test"},
+        {"action": "view", "link": "t.me/test/123"},
+        {"action": "react", "link": "t.me/test/123", "reaction": "👍"},
+        {"action": "comment", "link": "t.me/test/123", "text": "Nice!"},
+        {"action": "start_bot", "bot": "@bot", "param": "ref123"},
+        {"action": "delay", "seconds": 5}
+      ]
+    }
+    """
+    file_path = ask("Путь к JSON файлу с задачами: ")
+    if not file_path or not os.path.exists(file_path):
+        print(f"{C.R}❌ Файл не найден{C.RST}")
+        return
+
+    with open(file_path) as f:
+        data = json.load(f)
+
+    tasks_list = data.get("tasks", [])
+    if not tasks_list:
+        print(f"{C.R}❌ Нет задач{C.RST}")
+        return
+
+    sessions = select_sessions()
+    if not sessions:
+        return
+
+    proxies = load_proxies()
+
+    print(f"\n{C.G}📋 Выполняю {len(tasks_list)} задач на {len(sessions)} сессиях{C.RST}")
+
+    for i, session_name in enumerate(sessions):
+        proxy = proxies[i % len(proxies)] if proxies else None
+        client = await create_client(session_name, proxy)
+        if not await safe_connect(client, session_name):
+            continue
+
+        try:
+            for task in tasks_list:
+                action = task.get("action", "")
+                try:
+                    if action == "subscribe":
+                        p = parse_tg_link(task.get("channel", ""))
+                        entity = await resolve_channel(client, p["channel"])
+                        await client(JoinChannelRequest(entity))
+
+                    elif action == "view":
+                        p = parse_tg_link(task.get("link", ""))
+                        entity = await resolve_channel(client, p["channel"])
+                        await client(GetMessagesViewsRequest(
+                            peer=entity, id=[p["post_id"]], increment=True
+                        ))
+
+                    elif action == "react":
+                        p = parse_tg_link(task.get("link", ""))
+                        entity = await resolve_channel(client, p["channel"])
+                        r = ReactionEmoji(emoticon=task.get("reaction", "👍"))
+                        await client(SendReactionRequest(
+                            peer=entity, msg_id=p["post_id"], reaction=[r]
+                        ))
+
+                    elif action == "comment":
+                        p = parse_tg_link(task.get("link", ""))
+                        entity = await resolve_channel(client, p["channel"])
+                        await client.send_message(
+                            entity, task.get("text", "👍"),
+                            comment_to=p["post_id"]
+                        )
+
+                    elif action == "start_bot":
+                        bot_entity = await client.get_entity(task["bot"])
+                        param = task.get("param", "")
+                        if param:
+                            await client(StartBotRequest(
+                                bot=bot_entity, peer=bot_entity, start_param=param
+                            ))
+                        else:
+                            await client.send_message(bot_entity, "/start")
+
+                    elif action == "delay":
+                        await asyncio.sleep(task.get("seconds", 1))
+
+                    print(f"  {C.G}  ✅ {session_name}: {action}{C.RST}")
+                except Exception as e:
+                    print(f"  {C.R}  ❌ {session_name}: {action} — {e}{C.RST}")
+
+                await human_delay(1.0, 3.0)
+
+        finally:
+            await client.disconnect()
+
+    print(f"\n{C.G}✅ Все задачи выполнены{C.RST}")
+
+# ═══════════════════════════════════════════════════════════════
+# КОНЕЦ ЧАСТИ 2
+# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# ЧАСТЬ 3 — ФУНКЦИИ 36-50 + ГЛАВНЫЙ ЦИКЛ
+# ═══════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────
+# 36. ПРОГРЕВ (чтение, скролл, профили)
+# ─────────────────────────────────────────────────────────────
+
+async def task_warmup(client, session_name, **kw):
+    intensity = kw.get("intensity", "medium")
+
+    if intensity == "light":
+        actions = 5
+        delay_range = (3.0, 8.0)
+    elif intensity == "heavy":
+        actions = 25
+        delay_range = (1.0, 4.0)
     else:
+        actions = 12
+        delay_range = (2.0, 6.0)
+
+    me = await client.get_me()
+    print(f"  {C.DIM}  ↳ {session_name}: прогрев ({intensity}, {actions} действий){C.RST}")
+
+    dialogs = await client.get_dialogs(limit=30)
+    random.shuffle(dialogs)
+
+    action_count = 0
+    for dialog in dialogs[:actions]:
         try:
-            hours = int(duration_str)
-            ban_until_dt = datetime.now() + timedelta(hours=hours)
-            ban_until = ban_until_dt.isoformat()
-            ban_display = ban_until_dt.strftime("%d.%m.%Y %H:%M")
-        except ValueError:
-            await message.answer(f"{pe('cross')} Некорректный срок! Укажите часы или 'permanent'")
-            return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "UPDATE users SET is_banned = 1, ban_reason = ?, ban_until = ?, appeal_count = 0 WHERE user_id = ?",
-        (reason, ban_until, target_id)
-    )
-    conn.commit()
-    conn.close()
-
-    role = f"{pe('moder')} Администратор" if is_admin(uid) else f"{pe('moder')} Модератор"
-
-    await message.answer(
-        f"{pe('check')} <b>Пользователь забанен!</b>\n\n"
-        f"{pe('profile')} {target['first_name']} (<code>{target_id}</code>)\n"
-        f"{pe('rules_emoji')} Причина: <b>{reason}</b>\n"
-        f"{pe('clock')} До: <b>{ban_display}</b>\n"
-        f"{role}: {message.from_user.first_name}"
-    )
-
-    await send_notification(target_id,
-        f"{pe('ban_emoji')} <b>Вы заблокированы!</b>\n\n"
-        f"{pe('rules_emoji')} Причина: <b>{reason}</b>\n"
-        f"{pe('clock')} До: <b>{ban_display}</b>\n"
-        f"{role}\n\n"
-        f"{pe('appeal')} Подайте аппеляцию: /appeal <описание>\n"
-        f"{pe('warning')} Максимум 2 аппеляции"
-    )
-
-
-@router.message(Command("unban"))
-async def cmd_unban(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id) and not is_moderator(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для модераторов и админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /unban <user_id>")
-        return
-
-    try:
-        target_id = int(command.args.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный user_id!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute(
-        "UPDATE users SET is_banned = 0, ban_reason = '', ban_until = '' WHERE user_id = ?",
-        (target_id,)
-    )
-    conn.commit()
-    conn.close()
-
-    await message.answer(f"{pe('check')} Пользователь <code>{target_id}</code> разбанен!")
-
-    await send_notification(target_id,
-        f"{pe('check')} <b>Вы разбанены!</b>\n\n"
-        f"Добро пожаловать обратно! {pe('success')}"
-    )
-
-
-# ============================================================
-# /ban_buy / /unban_buy
-# ============================================================
-
-@router.message(Command("ban_buy"))
-async def cmd_ban_buy(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /ban_buy <user_id> <причина>")
-        return
-
-    parts = command.args.strip().split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Укажите user_id и причину!")
-        return
-
-    try:
-        target_id = int(parts[0])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный user_id!")
-        return
-    reason = parts[1]
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE users SET is_buy_banned = 1, buy_ban_reason = ? WHERE user_id = ?", (reason, target_id))
-    conn.commit()
-    conn.close()
-
-    await message.answer(f"{pe('check')} Бан покупок для <code>{target_id}</code>: {reason}")
-    await send_notification(target_id,
-        f"{pe('ban_emoji')} <b>Вам запрещено покупать подарки!</b>\n{pe('rules_emoji')} Причина: {reason}"
-    )
-
-
-@router.message(Command("unban_buy"))
-async def cmd_unban_buy(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /unban_buy <user_id>")
-        return
-
-    try:
-        target_id = int(command.args.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный user_id!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE users SET is_buy_banned = 0, buy_ban_reason = '' WHERE user_id = ?", (target_id,))
-    conn.commit()
-    conn.close()
-
-    await message.answer(f"{pe('check')} Бан покупок снят для <code>{target_id}</code>!")
-    await send_notification(target_id, f"{pe('check')} <b>Бан покупок снят!</b>")
-
-
-# ============================================================
-# /ban_trade / /unban_trade
-# ============================================================
-
-@router.message(Command("ban_trade"))
-async def cmd_ban_trade(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /ban_trade <user_id> <причина>")
-        return
-
-    parts = command.args.strip().split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Укажите user_id и причину!")
-        return
-
-    try:
-        target_id = int(parts[0])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный user_id!")
-        return
-    reason = parts[1]
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE users SET is_trade_banned = 1, trade_ban_reason = ? WHERE user_id = ?", (reason, target_id))
-    conn.commit()
-    conn.close()
-
-    await message.answer(f"{pe('check')} Бан торговли для <code>{target_id}</code>: {reason}")
-    await send_notification(target_id,
-        f"{pe('ban_emoji')} <b>Вам запрещено торговать!</b>\n{pe('rules_emoji')} Причина: {reason}"
-    )
-
-
-@router.message(Command("unban_trade"))
-async def cmd_unban_trade(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /unban_trade <user_id>")
-        return
-
-    try:
-        target_id = int(command.args.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный user_id!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE users SET is_trade_banned = 0, trade_ban_reason = '' WHERE user_id = ?", (target_id,))
-    conn.commit()
-    conn.close()
-
-    await message.answer(f"{pe('check')} Бан торговли снят для <code>{target_id}</code>!")
-    await send_notification(target_id, f"{pe('check')} <b>Бан торговли снят!</b>")
-
-
-# ============================================================
-# /warn — Предупреждение
-# ============================================================
-
-@router.message(Command("warn"))
-async def cmd_warn(message: Message, command: CommandObject):
-    uid = message.from_user.id
-    if not is_admin(uid) and not is_moderator(uid):
-        await message.answer(f"{pe('ban_emoji')} Только для модераторов и админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /warn <user_id> <причина>")
-        return
-
-    parts = command.args.strip().split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Укажите user_id и причину!")
-        return
-
-    try:
-        target_id = int(parts[0])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный user_id!")
-        return
-
-    reason = parts[1]
-    role = f"{pe('moder')} Администратор" if is_admin(uid) else f"{pe('moder')} Модератор"
-
-    await message.answer(
-        f"{pe('warn_emoji')} <b>Предупреждение выдано!</b>\n\n"
-        f"{pe('profile')} <code>{target_id}</code>\n"
-        f"{pe('rules_emoji')} Причина: {reason}\n"
-        f"{role}: {message.from_user.first_name}"
-    )
-
-    await send_notification(target_id,
-        f"{pe('warn_emoji')} <b>Вы получили предупреждение!</b>\n\n"
-        f"{pe('rules_emoji')} Причина: <b>{reason}</b>\n"
-        f"{role}\n\n"
-        f"{pe('warning')} Повторные нарушения могут привести к бану!"
-    )
-
-
-# ============================================================
-# /add_rules
-# ============================================================
-
-@router.message(Command("add_rules"))
-async def cmd_add_rules(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /add_rules <текст правил>")
-        return
-
-    rules_text = command.args.strip()
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE rules SET text = ? WHERE id = 1", (rules_text,))
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('check')} <b>Правила обновлены!</b>\n\n"
-        f"{pe('rules_emoji')} {rules_text[:200]}..."
-    )
-
-
-# ============================================================
-# /gift_stardom
-# ============================================================
-
-@router.message(Command("gift_stardom"))
-async def cmd_gift_stardom(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /gift_stardom <user_id> <уровень>")
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Укажите user_id и уровень (1-5)!")
-        return
-
-    try:
-        target_id = int(parts[0])
-        level = int(parts[1])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    if level not in STARDOM_LEVELS:
-        await message.answer(f"{pe('cross')} Уровень должен быть от 1 до 5!")
-        return
-
-    target = get_user(target_id)
-    if not target:
-        await message.answer(f"{pe('cross')} Пользователь не найден!")
-        return
-
-    await activate_stardom(target_id, level)
-
-    sd = STARDOM_LEVELS[level]
-    await message.answer(
-        f"{pe('check')} <b>Stardom подарен!</b>\n\n"
-        f"{pe('profile')} {target['first_name']} (<code>{target_id}</code>)\n"
-        f"{pe('stardom')} Уровень: <b>{sd['name']}</b>"
-    )
-
-
-# ============================================================
-# /add_promo / /add_promog
-# ============================================================
-
-@router.message(Command("add_promo"))
-async def cmd_add_promo(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /add_promo <код> <кол-во_звёзд> <кол-во_активаций>\n"
-            f"Пример: /add_promo WELCOME 100 50"
-        )
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 3:
-        await message.answer(f"{pe('cross')} Недостаточно параметров!")
-        return
-
-    code = parts[0].upper()
-    try:
-        stars_amount = int(parts[1])
-        max_uses = int(parts[2])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    try:
-        c.execute(
-            "INSERT INTO promocodes (code, reward_type, reward_value, max_uses) VALUES (?, 'stars', ?, ?)",
-            (code, str(stars_amount), max_uses)
-        )
-        promo_id = c.lastrowid
-        conn.commit()
-        conn.close()
-
-        await message.answer(
-            f"{pe('check')} <b>Промокод создан!</b>\n\n"
-            f"{pe('promo')} Код: <code>{code}</code>\n"
-            f"{pe('money')} Награда: <b>{stars_amount} {pe('star')}</b>\n"
-            f"{pe('friends')} Активаций: <b>{max_uses}</b>\n"
-            f"{pe('id')} ID: {promo_id}"
-        )
-    except sqlite3.IntegrityError:
-        conn.close()
-        await message.answer(f"{pe('cross')} Промокод с таким кодом уже существует!")
-
-
-@router.message(Command("add_promog"))
-async def cmd_add_promog(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /add_promog <код> <название_подарка> <кол-во_активаций>\n"
-            f"Пример: /add_promog GIFT1 Роза 100"
-        )
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 3:
-        await message.answer(f"{pe('cross')} Недостаточно параметров!")
-        return
-
-    code = parts[0].upper()
-    gift_name = parts[1]
-    try:
-        max_uses = int(parts[2])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный параметр!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    try:
-        c.execute(
-            "INSERT INTO promocodes (code, reward_type, reward_value, max_uses) VALUES (?, 'gift', ?, ?)",
-            (code, gift_name, max_uses)
-        )
-        promo_id = c.lastrowid
-        conn.commit()
-        conn.close()
-
-        await message.answer(
-            f"{pe('check')} <b>Промокод с подарком создан!</b>\n\n"
-            f"{pe('promo')} Код: <code>{code}</code>\n"
-            f"{pe('gift')} Подарок: <b>{gift_name}</b>\n"
-            f"{pe('friends')} Активаций: <b>{max_uses}</b>"
-        )
-    except sqlite3.IntegrityError:
-        conn.close()
-        await message.answer(f"{pe('cross')} Промокод уже существует!")
-
-
-# ============================================================
-# /add_moder / /del_moder
-# ============================================================
-
-@router.message(Command("add_moder"))
-async def cmd_add_moder(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /add_moder <user_id>")
-        return
-
-    try:
-        target_id = int(command.args.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный user_id!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    try:
-        c.execute("INSERT INTO moderators (user_id) VALUES (?)", (target_id,))
-        conn.commit()
-        conn.close()
-
-        await message.answer(f"{pe('check')} Модератор <code>{target_id}</code> добавлен!")
-        await send_notification(target_id,
-            f"{pe('moder')} <b>Вы назначены модератором!</b>\n\n"
-            f"Доступные команды:\n"
-            f"├ /ban — Бан (до 12ч, макс 2/неделю)\n"
-            f"├ /unban — Разбан\n"
-            f"└ /warn — Предупреждение"
-        )
-    except sqlite3.IntegrityError:
-        conn.close()
-        await message.answer(f"{pe('cross')} Уже является модератором!")
-
-
-@router.message(Command("del_moder"))
-async def cmd_del_moder(message: Message, command: CommandObject):
-    if not is_admin(message.from_user.id):
-        await message.answer(f"{pe('ban_emoji')} Только для админов!")
-        return
-
-    if not command.args:
-        await message.answer(f"{pe('cross')} Использование: /del_moder <user_id>")
-        return
-
-    try:
-        target_id = int(command.args.strip())
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректный user_id!")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("DELETE FROM moderators WHERE user_id = ?", (target_id,))
-    conn.commit()
-    conn.close()
-
-    await message.answer(f"{pe('check')} Модератор <code>{target_id}</code> удалён!")
-    await send_notification(target_id, f"{pe('moder')} <b>Вы больше не модератор.</b>")
-
-
-# ============================================================
-# АППЕЛЯЦИИ — /appeal
-# ============================================================
-
-@router.message(Command("appeal"))
-async def cmd_appeal(message: Message, command: CommandObject):
-    user_id = message.from_user.id
-    user = get_user(user_id)
-
-    if not user:
-        await message.answer(f"{pe('cross')} Ошибка!")
-        return
-
-    if not user["is_banned"]:
-        await message.answer(f"{pe('cross')} Вы не забанены! Аппеляция не требуется.")
-        return
-
-    if user["appeal_count"] >= 2:
-        await message.answer(
-            f"{pe('cross')} <b>Лимит аппеляций исчерпан!</b>\n\n"
-            f"Вы уже подали максимум 2 аппеляции."
-        )
-        return
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /appeal <описание аппеляции>\n"
-            f"{pe('warning')} Осталось аппеляций: {2 - user['appeal_count']}"
-        )
-        return
-
-    appeal_text = command.args.strip()
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("INSERT INTO appeals (user_id, text) VALUES (?, ?)", (user_id, appeal_text))
-    appeal_id = c.lastrowid
-    c.execute("UPDATE users SET appeal_count = appeal_count + 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-
-    remaining = 1 - user["appeal_count"]
-
-    await message.answer(
-        f"{pe('check')} <b>Аппеляция подана!</b>\n\n"
-        f"{pe('appeal')} ID: <code>{appeal_id}</code>\n"
-        f"{pe('rules_emoji')} Текст: {appeal_text[:200]}\n\n"
-        f"{pe('clock')} Ожидайте рассмотрения администратором.\n"
-        f"{pe('warning')} Осталось аппеляций: {remaining}"
-    )
-
-    kb = InlineKeyboardBuilder()
-    kb.row(
-        make_inline_button("Разбанить", f"appeal_accept_{appeal_id}_{user_id}", "check"),
-        make_inline_button("Отклонить", f"appeal_reject_{appeal_id}_{user_id}", "cross")
-    )
-
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(
-                admin_id,
-                f"{pe('appeal')} <b>Новая аппеляция!</b>\n\n"
-                f"{pe('id')} ID: <code>{appeal_id}</code>\n"
-                f"{pe('profile')} От: {user['first_name']} (<code>{user_id}</code>)\n"
-                f"{pe('ban_emoji')} Причина бана: {user['ban_reason']}\n"
-                f"{pe('clock')} Бан до: {user['ban_until']}\n\n"
-                f"{pe('rules_emoji')} Текст аппеляции:\n<i>{appeal_text}</i>",
-                reply_markup=kb.as_markup()
-            )
+            action_type = random.choice(["read", "scroll", "profile", "read", "scroll"])
+
+            if action_type == "read":
+                # Чтение последних сообщений
+                msgs = await client.get_messages(dialog.entity, limit=random.randint(3, 15))
+                if msgs:
+                    await client(ReadHistoryRequest(
+                        peer=dialog.entity,
+                        max_id=msgs[0].id
+                    ))
+                action_count += 1
+
+            elif action_type == "scroll":
+                # Имитация скролла — загрузка сообщений пачками
+                offset_id = 0
+                for _ in range(random.randint(1, 4)):
+                    history = await client(GetHistoryRequest(
+                        peer=dialog.entity,
+                        offset_id=offset_id,
+                        offset_date=None,
+                        add_offset=0,
+                        limit=20,
+                        max_id=0,
+                        min_id=0,
+                        hash=0
+                    ))
+                    if history.messages:
+                        offset_id = history.messages[-1].id
+                    await asyncio.sleep(random.uniform(0.3, 1.0))
+                action_count += 1
+
+            elif action_type == "profile":
+                # Просмотр профиля
+                if isinstance(dialog.entity, User) and not dialog.entity.bot:
+                    try:
+                        await client(GetFullUserRequest(dialog.entity))
+                    except Exception:
+                        pass
+                elif isinstance(dialog.entity, (Channel, Chat)):
+                    try:
+                        if hasattr(dialog.entity, 'megagroup') or hasattr(dialog.entity, 'broadcast'):
+                            await client(GetFullChannelRequest(dialog.entity))
+                    except Exception:
+                        pass
+                action_count += 1
+
+            await asyncio.sleep(random.uniform(*delay_range))
+
+        except FloodWaitError as e:
+            await asyncio.sleep(min(e.seconds, 30))
         except Exception:
             pass
 
-
-# ============================================================
-# АППЕЛЯЦИЯ — ПРИНЯТЬ
-# ============================================================
-
-@router.callback_query(F.data.startswith("appeal_accept_"))
-async def appeal_accept(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer(f"{pe_plain('ban_emoji')} Только для админов!", show_alert=True)
-        return
-
-    parts = callback.data.split("_")
-    appeal_id = int(parts[2])
-    user_id = int(parts[3])
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE appeals SET status = 'accepted' WHERE appeal_id = ?", (appeal_id,))
-    c.execute("UPDATE users SET is_banned = 0, ban_reason = '', ban_until = '' WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-
-    await callback.message.edit_text(
-        f"{pe('check')} <b>Аппеляция #{appeal_id} принята!</b>\n\n"
-        f"{pe('profile')} Пользователь <code>{user_id}</code> разбанен."
-    )
-
-    await send_notification(user_id,
-        f"{pe('check')} <b>Ваша аппеляция принята!</b>\n\n"
-        f"{pe('appeal')} Аппеляция #{appeal_id}\n"
-        f"{pe('success')} Вы разбанены! Добро пожаловать обратно!"
-    )
-
-
-# ============================================================
-# АППЕЛЯЦИЯ — ОТКЛОНИТЬ
-# ============================================================
-
-@router.callback_query(F.data.startswith("appeal_reject_"))
-async def appeal_reject(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer(f"{pe_plain('ban_emoji')} Только для админов!", show_alert=True)
-        return
-
-    parts = callback.data.split("_")
-    appeal_id = int(parts[2])
-    user_id = int(parts[3])
-
-    await state.set_state(AppealRejectStates.waiting_reason)
-    await state.update_data(reject_appeal_id=appeal_id, reject_user_id=user_id)
-
-    await callback.message.edit_text(
-        f"{pe('cross')} <b>Отклонение аппеляции #{appeal_id}</b>\n\n"
-        f"{pe('appeal')} Напишите причину отклонения:"
-    )
-    await callback.answer()
-
-
-@router.message(AppealRejectStates.waiting_reason)
-async def appeal_reject_reason(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await state.clear()
-        return
-
-    data = await state.get_data()
-    await state.clear()
-
-    appeal_id = data["reject_appeal_id"]
-    user_id = data["reject_user_id"]
-    reason = message.text.strip()
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE appeals SET status = 'rejected', admin_response = ? WHERE appeal_id = ?", (reason, appeal_id))
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"{pe('check')} <b>Аппеляция #{appeal_id} отклонена!</b>\n\n"
-        f"{pe('rules_emoji')} Причина: {reason}"
-    )
-
-    await send_notification(user_id,
-        f"{pe('cross')} <b>Ваша аппеляция отклонена!</b>\n\n"
-        f"{pe('appeal')} Аппеляция #{appeal_id}\n"
-        f"{pe('rules_emoji')} Причина отказа: <b>{reason}</b>\n\n"
-        f"{pe('warning')} Повторные аппеляции без оснований могут привести к ужесточению бана."
-    )
-
-
-# Конец части 6
-# ============================================================
-# ============================================================
-# ЧАСТЬ 7: Transfer, Inline-мод, Фоновые задачи, Запуск бота
-# ============================================================
-
-# ============================================================
-# /transfer — Передача подарка
-# ============================================================
-
-@router.message(Command("transfer"))
-async def cmd_transfer(message: Message, command: CommandObject):
-    user_id = message.from_user.id
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /transfer <inv_id> <user_id>\n"
-            f"{pe('money')} Комиссия: 15 {pe('star')} (зависит от Stardom)"
-        )
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Укажите inv_id и user_id!")
-        return
-
+    # Имитация набора текста (в Избранное)
     try:
-        inv_id = int(parts[0])
-        target_id = int(parts[1])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    if target_id == user_id:
-        await message.answer(f"{pe('cross')} Нельзя передать подарок самому себе!")
-        return
-
-    target = get_user(target_id)
-    if not target:
-        await message.answer(f"{pe('cross')} Получатель не найден! Он должен сначала написать боту.")
-        return
-
-    fee = get_gift_transfer_fee(user_id)
-    stars = get_stars(user_id)
-
-    if stars < fee:
-        await message.answer(
-            f"{pe('cross')} Недостаточно звёзд для комиссии! "
-            f"Нужно {fee} {pe('star')}, у вас {stars} {pe('star')}"
-        )
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM inventory WHERE inv_id = ? AND user_id = ?", (inv_id, user_id))
-    item = c.fetchone()
-
-    if not item:
-        conn.close()
-        await message.answer(f"{pe('cross')} Подарок не найден в вашем инвентаре!")
-        return
-
-    item = dict(item)
-
-    if item["is_nft"]:
-        conn.close()
-        await message.answer(f"{pe('cross')} Для передачи NFT используйте /transfer_nft!")
-        return
-
-    c.execute("UPDATE inventory SET user_id = ? WHERE inv_id = ?", (target_id, inv_id))
-    conn.commit()
-    conn.close()
-
-    update_stars(user_id, -fee)
-    new_balance = get_stars(user_id)
-
-    await message.answer(
-        f"{pe('check')} <b>Подарок передан!</b>\n\n"
-        f"{item['gift_emoji']} <b>{item['gift_name']}</b>\n"
-        f"{pe('id')} Inv ID: <code>{inv_id}</code>\n"
-        f"{pe('send')} Получатель: <code>{target_id}</code>\n"
-        f"{pe('money')} Комиссия: <b>{fee} {pe('star')}</b>\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>"
-    )
-
-    await send_notification(target_id,
-        f"{pe('gift')} <b>Вам передали подарок!</b>\n\n"
-        f"{item['gift_emoji']} <b>{item['gift_name']}</b>\n"
-        f"{pe('id')} Inv ID: <code>{inv_id}</code>\n"
-        f"{pe('profile')} От: {message.from_user.first_name} (<code>{user_id}</code>)"
-    )
-
-
-# ============================================================
-# /transfer_nft — Передача NFT
-# ============================================================
-
-@router.message(Command("transfer_nft"))
-async def cmd_transfer_nft(message: Message, command: CommandObject):
-    user_id = message.from_user.id
-
-    if not command.args:
-        await message.answer(
-            f"{pe('cross')} Использование: /transfer_nft <nft_id> <user_id>\n"
-            f"{pe('money')} Комиссия: 20 {pe('star')} (зависит от Stardom)"
-        )
-        return
-
-    parts = command.args.strip().split()
-    if len(parts) < 2:
-        await message.answer(f"{pe('cross')} Укажите nft_id и user_id!")
-        return
-
-    try:
-        nft_id = int(parts[0])
-        target_id = int(parts[1])
-    except ValueError:
-        await message.answer(f"{pe('cross')} Некорректные параметры!")
-        return
-
-    if target_id == user_id:
-        await message.answer(f"{pe('cross')} Нельзя передать NFT самому себе!")
-        return
-
-    target = get_user(target_id)
-    if not target:
-        await message.answer(f"{pe('cross')} Получатель не найден!")
-        return
-
-    fee = get_nft_transfer_fee(user_id)
-    stars = get_stars(user_id)
-
-    if stars < fee:
-        await message.answer(
-            f"{pe('cross')} Недостаточно звёзд! "
-            f"Нужно {fee} {pe('star')}, у вас {stars} {pe('star')}"
-        )
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("SELECT * FROM nfts WHERE nft_id = ? AND owner_id = ?", (nft_id, user_id))
-    nft = c.fetchone()
-
-    if not nft:
-        conn.close()
-        await message.answer(f"{pe('cross')} NFT не найден или не принадлежит вам!")
-        return
-
-    nft = dict(nft)
-
-    c.execute("SELECT trade_id FROM trades WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} NFT на торговле! Сначала снимите: /del_trade")
-        return
-
-    c.execute("SELECT rental_id FROM nft_rentals WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} NFT в аренде!")
-        return
-
-    c.execute("SELECT auction_id FROM auctions WHERE nft_id = ? AND is_active = 1", (nft_id,))
-    if c.fetchone():
-        conn.close()
-        await message.answer(f"{pe('cross')} NFT на аукционе!")
-        return
-
-    c.execute("UPDATE nfts SET owner_id = ? WHERE nft_id = ?", (target_id, nft_id))
-    c.execute(
-        "UPDATE inventory SET user_id = ? WHERE nft_id = ? AND user_id = ?",
-        (target_id, nft_id, user_id)
-    )
-    conn.commit()
-    conn.close()
-
-    update_stars(user_id, -fee)
-    new_balance = get_stars(user_id)
-
-    crafted = f" {pe('hammer')}" if nft["is_crafted"] else ""
-
-    await message.answer(
-        f"{pe('check')} <b>NFT передан!</b>\n\n"
-        f"{nft['gift_emoji']} <b>{nft['gift_name']}</b> | NFT #{nft_id}{crafted}\n"
-        f"{pe('model')} {nft['model_name']} ({nft['model_chance']}%)\n"
-        f"{pe('pattern')} {nft['pattern_name']} ({nft['pattern_chance']}%)\n"
-        f"{pe('background')} {nft['bg_name']} ({nft['bg_chance']}%)\n\n"
-        f"{pe('send')} Получатель: <code>{target_id}</code>\n"
-        f"{pe('money')} Комиссия: <b>{fee} {pe('star')}</b>\n"
-        f"{pe('money')} Баланс: <b>{new_balance} {pe('star')}</b>"
-    )
-
-    await send_notification(target_id,
-        f"{pe('nft')} <b>Вам передали NFT!</b>\n\n"
-        f"{nft['gift_emoji']} <b>{nft['gift_name']}</b> | NFT #{nft_id}{crafted}\n"
-        f"{pe('model')} {nft['model_name']} ({nft['model_chance']}%)\n"
-        f"{pe('pattern')} {nft['pattern_name']} ({nft['pattern_chance']}%)\n"
-        f"{pe('background')} {nft['bg_name']} ({nft['bg_chance']}%)\n"
-        f"{pe('profile')} От: {message.from_user.first_name} (<code>{user_id}</code>)"
-    )
-
-
-# ============================================================
-# INLINE МОД — @bot_username
-# ============================================================
-
-@router.inline_query()
-async def inline_query_handler(inline_query: InlineQuery):
-    user_id = inline_query.from_user.id
-    query = inline_query.query.strip()
-    results = []
-
-    if not query:
-        results.append(
-            InlineQueryResultArticle(
-                id="help",
-                title=f"{pe_plain('gift')} Как отправить подарок?",
-                description="Введите: inv_id или nft nft_id",
-                input_message_content=InputTextMessageContent(
-                    message_text=(
-                        f"{pe('gift')} <b>Отправка подарков через Inline</b>\n\n"
-                        f"Используйте:\n"
-                        f"@bot inv_id — отправить подарок\n"
-                        f"@bot nft nft_id — отправить NFT"
-                    )
-                )
-            )
-        )
-        await inline_query.answer(results, cache_time=5, is_personal=True)
-        return
-
-    # ============================================================
-    # INLINE — ОТПРАВКА NFT
-    # ============================================================
-    if query.lower().startswith("nft "):
-        nft_part = query[4:].strip()
-        try:
-            nft_id = int(nft_part)
-        except ValueError:
-            results.append(
-                InlineQueryResultArticle(
-                    id="error",
-                    title=f"{pe_plain('cross')} Некорректный NFT ID",
-                    description="Введите числовой ID",
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"{pe('cross')} Ошибка: некорректный NFT ID"
-                    )
-                )
-            )
-            await inline_query.answer(results, cache_time=5, is_personal=True)
-            return
-
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT * FROM nfts WHERE nft_id = ? AND owner_id = ?", (nft_id, user_id))
-        nft = c.fetchone()
-
-        if not nft:
-            conn.close()
-            results.append(
-                InlineQueryResultArticle(
-                    id="not_found",
-                    title=f"{pe_plain('cross')} NFT не найден",
-                    description="NFT не найден или не принадлежит вам",
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"{pe('cross')} NFT не найден!"
-                    )
-                )
-            )
-            await inline_query.answer(results, cache_time=5, is_personal=True)
-            return
-
-        nft = dict(nft)
-
-        c.execute("SELECT trade_id FROM trades WHERE nft_id = ? AND is_active = 1", (nft_id,))
-        if c.fetchone():
-            conn.close()
-            results.append(
-                InlineQueryResultArticle(
-                    id="busy",
-                    title=f"{pe_plain('cross')} NFT на торговле",
-                    description="Сначала снимите с торговли",
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"{pe('cross')} NFT на торговле!"
-                    )
-                )
-            )
-            await inline_query.answer(results, cache_time=5, is_personal=True)
-            return
-
-        c.execute("SELECT auction_id FROM auctions WHERE nft_id = ? AND is_active = 1", (nft_id,))
-        if c.fetchone():
-            conn.close()
-            results.append(
-                InlineQueryResultArticle(
-                    id="busy_auc",
-                    title=f"{pe_plain('cross')} NFT на аукционе",
-                    description="Снимите с аукциона",
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"{pe('cross')} NFT на аукционе!"
-                    )
-                )
-            )
-            await inline_query.answer(results, cache_time=5, is_personal=True)
-            return
-
-        c.execute("SELECT rental_id FROM nft_rentals WHERE nft_id = ? AND is_active = 1", (nft_id,))
-        if c.fetchone():
-            conn.close()
-            results.append(
-                InlineQueryResultArticle(
-                    id="busy_rent",
-                    title=f"{pe_plain('cross')} NFT в аренде",
-                    description="NFT сдан в аренду",
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"{pe('cross')} NFT в аренде!"
-                    )
-                )
-            )
-            await inline_query.answer(results, cache_time=5, is_personal=True)
-            return
-
-        conn.close()
-
-        fee = get_nft_transfer_fee(user_id)
-        stars = get_stars(user_id)
-
-        if stars < fee:
-            results.append(
-                InlineQueryResultArticle(
-                    id="no_stars",
-                    title=f"{pe_plain('cross')} Недостаточно звёзд (нужно {fee}{pe_plain('star')})",
-                    description=f"У вас {stars}{pe_plain('star')}, нужно {fee}{pe_plain('star')} комиссии",
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"{pe('cross')} Недостаточно звёзд для передачи NFT!"
-                    )
-                )
-            )
-            await inline_query.answer(results, cache_time=5, is_personal=True)
-            return
-
-        transfer_id = hashlib.md5(f"nft_{nft_id}_{user_id}_{time.time()}".encode()).hexdigest()[:16]
-
-        conn = get_db()
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO inline_transfers (transfer_id, sender_id, nft_id, transfer_type) "
-            "VALUES (?, ?, ?, 'nft')",
-            (transfer_id, user_id, nft_id)
-        )
-        conn.commit()
-        conn.close()
-
-        crafted = f" {pe_plain('hammer')} Крафт" if nft["is_crafted"] else ""
-
-        results.append(
-            InlineQueryResultArticle(
-                id=transfer_id,
-                title=f"{pe_plain('nft')} Отправить NFT #{nft_id} — {nft['gift_name']}",
-                description=(
-                    f"{pe_plain('model')}{nft['model_name']}({nft['model_chance']}%) | "
-                    f"Комиссия: {fee}{pe_plain('star')}"
-                ),
-                input_message_content=InputTextMessageContent(
-                    message_text=(
-                        f"{pe('nft')} <b>NFT подарок!</b> {pe('success')}\n\n"
-                        f"{nft['gift_emoji']} <b>{nft['gift_name']}</b> | NFT #{nft_id}{crafted}\n"
-                        f"{pe('model')} Модель: <b>{nft['model_name']}</b> ({nft['model_chance']}%)\n"
-                        f"{pe('pattern')} Узор: <b>{nft['pattern_name']}</b> ({nft['pattern_chance']}%)\n"
-                        f"{pe('background')} Фон: <b>{nft['bg_name']}</b> ({nft['bg_chance']}%)\n\n"
-                        f"{pe('profile')} От: {inline_query.from_user.first_name}\n"
-                        f"{pe('gift')} Нажмите кнопку чтобы получить!"
-                    )
-                ),
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[
-                        make_inline_button("Получить NFT!", f"claim_nft_{transfer_id}", "gift")
-                    ]]
-                )
-            )
-        )
-
-    # ============================================================
-    # INLINE — ОТПРАВКА ПОДАРКА
-    # ============================================================
-    else:
-        try:
-            inv_id = int(query)
-        except ValueError:
-            results.append(
-                InlineQueryResultArticle(
-                    id="error",
-                    title=f"{pe_plain('cross')} Некорректный ID",
-                    description="Введите числовой Inv ID или 'nft <id>'",
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"{pe('cross')} Некорректный ID!"
-                    )
-                )
-            )
-            await inline_query.answer(results, cache_time=5, is_personal=True)
-            return
-
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT * FROM inventory WHERE inv_id = ? AND user_id = ?", (inv_id, user_id))
-        item = c.fetchone()
-
-        if not item:
-            conn.close()
-            results.append(
-                InlineQueryResultArticle(
-                    id="not_found",
-                    title=f"{pe_plain('cross')} Подарок не найден",
-                    description="Подарок не найден в вашем инвентаре",
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"{pe('cross')} Подарок не найден!"
-                    )
-                )
-            )
-            await inline_query.answer(results, cache_time=5, is_personal=True)
-            return
-
-        item = dict(item)
-
-        if item["is_nft"]:
-            conn.close()
-            results.append(
-                InlineQueryResultArticle(
-                    id="use_nft",
-                    title=f"{pe_plain('info')} Для NFT используйте: nft <id>",
-                    description="Введите: nft <nft_id>",
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"{pe('info')} Для отправки NFT используйте: @bot nft <nft_id>"
-                    )
-                )
-            )
-            await inline_query.answer(results, cache_time=5, is_personal=True)
-            return
-
-        conn.close()
-
-        fee = get_gift_transfer_fee(user_id)
-        stars = get_stars(user_id)
-
-        if stars < fee:
-            results.append(
-                InlineQueryResultArticle(
-                    id="no_stars",
-                    title=f"{pe_plain('cross')} Недостаточно звёзд (нужно {fee}{pe_plain('star')})",
-                    description=f"У вас {stars}{pe_plain('star')}",
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"{pe('cross')} Недостаточно звёзд для передачи!"
-                    )
-                )
-            )
-            await inline_query.answer(results, cache_time=5, is_personal=True)
-            return
-
-        transfer_id = hashlib.md5(f"gift_{inv_id}_{user_id}_{time.time()}".encode()).hexdigest()[:16]
-
-        conn = get_db()
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO inline_transfers (transfer_id, sender_id, inv_id, transfer_type) "
-            "VALUES (?, ?, ?, 'gift')",
-            (transfer_id, user_id, inv_id)
-        )
-        conn.commit()
-        conn.close()
-
-        rarity_emoji = pe_plain('common') if item["rarity"] == "common" else pe_plain('rare')
-        limited_label = f" {pe_plain('limit')} Лимитированный" if item["is_limited"] else ""
-
-        results.append(
-            InlineQueryResultArticle(
-                id=transfer_id,
-                title=f"{pe_plain('gift')} Отправить {item['gift_name']}",
-                description=f"Inv ID: {inv_id} | Комиссия: {fee}{pe_plain('star')}",
-                input_message_content=InputTextMessageContent(
-                    message_text=(
-                        f"{pe('gift')} <b>Подарок для вас!</b> {pe('success')}\n\n"
-                        f"{rarity_emoji} {item['gift_emoji']} <b>{item['gift_name']}</b>{limited_label}\n\n"
-                        f"{pe('profile')} От: {inline_query.from_user.first_name}\n"
-                        f"{pe('gift')} Нажмите кнопку чтобы получить!"
-                    )
-                ),
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[
-                        make_inline_button("Получить подарок!", f"claim_gift_{transfer_id}", "gift")
-                    ]]
-                )
-            )
-        )
-
-    await inline_query.answer(results, cache_time=5, is_personal=True)
-
-
-# ============================================================
-# ПОЛУЧЕНИЕ ПОДАРКА ЧЕРЕЗ INLINE
-# ============================================================
-
-@router.callback_query(F.data.startswith("claim_gift_"))
-async def claim_gift_inline(callback: CallbackQuery):
-    transfer_id = callback.data[len("claim_gift_"):]
-    claimer_id = callback.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM inline_transfers WHERE transfer_id = ?", (transfer_id,))
-    transfer = c.fetchone()
-
-    if not transfer:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Передача не найдена!", show_alert=True)
-        return
-
-    transfer = dict(transfer)
-
-    if transfer["is_claimed"]:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Этот подарок уже получен!", show_alert=True)
-        return
-
-    if transfer["sender_id"] == claimer_id:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Нельзя получить свой подарок!", show_alert=True)
-        return
-
-    ensure_user(claimer_id, callback.from_user.username or "", callback.from_user.first_name or "")
-
-    inv_id = transfer["inv_id"]
-    sender_id = transfer["sender_id"]
-
-    c.execute("SELECT * FROM inventory WHERE inv_id = ? AND user_id = ?", (inv_id, sender_id))
-    item = c.fetchone()
-
-    if not item:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Подарок больше не доступен!", show_alert=True)
-        return
-
-    item = dict(item)
-
-    fee = get_gift_transfer_fee(sender_id)
-    stars = get_stars(sender_id)
-
-    if stars < fee:
-        conn.close()
-        await callback.answer(
-            f"{pe_plain('cross')} У отправителя недостаточно звёзд для комиссии!",
-            show_alert=True
-        )
-        return
-
-    c.execute("UPDATE inventory SET user_id = ? WHERE inv_id = ?", (claimer_id, inv_id))
-    c.execute(
-        "UPDATE inline_transfers SET is_claimed = 1, claimed_by = ? WHERE transfer_id = ?",
-        (claimer_id, transfer_id)
-    )
-    conn.commit()
-    conn.close()
-
-    update_stars(sender_id, -fee)
-
-    claimer_name = callback.from_user.first_name
-
-    try:
-        await callback.message.edit_text(
-            f"{pe('gift')} <b>Подарок получен!</b> {pe('check')}\n\n"
-            f"{item['gift_emoji']} <b>{item['gift_name']}</b>\n"
-            f"{pe('id')} Inv ID: <code>{inv_id}</code>\n\n"
-            f"{pe('profile')} Получил: <b>{claimer_name}</b>\n"
-            f"{pe('success')} Подарок доставлен!"
-        )
+        saved = await client.get_entity("me")
+        # Устанавливаем статус онлайн
+        await client(UpdateStatusRequest(offline=False))
+        await asyncio.sleep(random.uniform(2, 5))
+        await client(UpdateStatusRequest(offline=True))
     except Exception:
         pass
 
-    await callback.answer(f"{pe_plain('success')} Вы получили {item['gift_name']}!", show_alert=True)
+    print(f"  {C.G}  ↳ {session_name}: выполнено {action_count} действий{C.RST}")
 
-    await send_notification(sender_id,
-        f"{pe('send')} <b>Ваш подарок получен!</b>\n\n"
-        f"{item['gift_emoji']} <b>{item['gift_name']}</b>\n"
-        f"{pe('profile')} Получил: {claimer_name} (<code>{claimer_id}</code>)\n"
-        f"{pe('money')} Комиссия: {fee} {pe('star')}"
+async def action_warmup():
+    print(f"\n{C.Y}  Интенсивность прогрева:{C.RST}")
+    print(f"  1. 🟢 Лёгкий (5 действий, большие паузы)")
+    print(f"  2. 🟡 Средний (12 действий)")
+    print(f"  3. 🔴 Тяжёлый (25 действий, малые паузы)")
+    ch = ask_int("Выбор: ", 2)
+    intensity = {1: "light", 2: "medium", 3: "heavy"}.get(ch, "medium")
+
+    sessions = select_sessions("Выбери аккаунты для прогрева")
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_warmup,
+        task_name="🔥 Прогрев аккаунтов",
+        max_concurrent=3,
+        delay_between=(2.0, 5.0),
+        intensity=intensity
     )
 
+# ─────────────────────────────────────────────────────────────
+# 37. ИМИТАЦИЯ ОНЛАЙНА (параллельно)
+# ─────────────────────────────────────────────────────────────
 
-# ============================================================
-# ПОЛУЧЕНИЕ NFT ЧЕРЕЗ INLINE
-# ============================================================
+async def action_online_imitation():
+    duration = ask_int("Длительность (минуты): ", 60)
+    interval = ask_int("Интервал пинга (секунды): ", 30)
 
-@router.callback_query(F.data.startswith("claim_nft_"))
-async def claim_nft_inline(callback: CallbackQuery):
-    transfer_id = callback.data[len("claim_nft_"):]
-    claimer_id = callback.from_user.id
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM inline_transfers WHERE transfer_id = ?", (transfer_id,))
-    transfer = c.fetchone()
-
-    if not transfer:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Передача не найдена!", show_alert=True)
+    sessions = select_sessions("Аккаунты для имитации онлайна")
+    if not sessions:
         return
 
-    transfer = dict(transfer)
+    proxies = load_proxies()
+    clients = []
 
-    if transfer["is_claimed"]:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Этот NFT уже получен!", show_alert=True)
+    print(f"\n{C.G}🟢 Запуск имитации онлайна на {len(sessions)} аккаунтах{C.RST}")
+    print(f"  Длительность: {duration} мин | Интервал: {interval} сек")
+    print(f"  Ctrl+C для остановки\n")
+
+    # Подключаем все клиенты
+    for i, session_name in enumerate(sessions):
+        proxy = proxies[i % len(proxies)] if proxies else None
+        client = await create_client(session_name, proxy)
+        if await safe_connect(client, session_name):
+            clients.append((client, session_name))
+            print(f"  {C.G}✅ {session_name} подключён{C.RST}")
+        else:
+            print(f"  {C.R}❌ {session_name} не подключился{C.RST}")
+
+    if not clients:
+        print(f"{C.R}❌ Нет подключённых клиентов{C.RST}")
         return
 
-    if transfer["sender_id"] == claimer_id:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} Нельзя получить свой NFT!", show_alert=True)
-        return
-
-    ensure_user(claimer_id, callback.from_user.username or "", callback.from_user.first_name or "")
-
-    nft_id = transfer["nft_id"]
-    sender_id = transfer["sender_id"]
-
-    c.execute("SELECT * FROM nfts WHERE nft_id = ? AND owner_id = ?", (nft_id, sender_id))
-    nft = c.fetchone()
-
-    if not nft:
-        conn.close()
-        await callback.answer(f"{pe_plain('cross')} NFT больше не доступен!", show_alert=True)
-        return
-
-    nft = dict(nft)
-
-    fee = get_nft_transfer_fee(sender_id)
-    stars = get_stars(sender_id)
-
-    if stars < fee:
-        conn.close()
-        await callback.answer(
-            f"{pe_plain('cross')} У отправителя недостаточно звёзд!",
-            show_alert=True
-        )
-        return
-
-    c.execute("UPDATE nfts SET owner_id = ? WHERE nft_id = ?", (claimer_id, nft_id))
-    c.execute(
-        "UPDATE inventory SET user_id = ? WHERE nft_id = ? AND user_id = ?",
-        (claimer_id, nft_id, sender_id)
-    )
-    c.execute(
-        "UPDATE inline_transfers SET is_claimed = 1, claimed_by = ? WHERE transfer_id = ?",
-        (claimer_id, transfer_id)
-    )
-    conn.commit()
-    conn.close()
-
-    update_stars(sender_id, -fee)
-
-    claimer_name = callback.from_user.first_name
-    crafted = f" {pe('hammer')}" if nft["is_crafted"] else ""
+    end_time = time.time() + (duration * 60)
 
     try:
-        await callback.message.edit_text(
-            f"{pe('nft')} <b>NFT получен!</b> {pe('check')}\n\n"
-            f"{nft['gift_emoji']} <b>{nft['gift_name']}</b> | NFT #{nft_id}{crafted}\n"
-            f"{pe('model')} Модель: <b>{nft['model_name']}</b> ({nft['model_chance']}%)\n"
-            f"{pe('pattern')} Узор: <b>{nft['pattern_name']}</b> ({nft['pattern_chance']}%)\n"
-            f"{pe('background')} Фон: <b>{nft['bg_name']}</b> ({nft['bg_chance']}%)\n\n"
-            f"{pe('profile')} Получил: <b>{claimer_name}</b> {pe('check')}\n"
-            f"{pe('success')} NFT доставлен!"
-        )
-    except Exception:
-        pass
+        cycle = 0
+        while time.time() < end_time:
+            cycle += 1
+            for client, name in clients:
+                try:
+                    await client(UpdateStatusRequest(offline=False))
+                except Exception:
+                    pass
 
-    await callback.answer(f"{pe_plain('success')} Вы получили NFT #{nft_id}!", show_alert=True)
+            remaining = int((end_time - time.time()) / 60)
+            print(f"  {C.DIM}  Цикл {cycle} | Осталось ~{remaining} мин | "
+                  f"{len(clients)} аккаунтов онлайн{C.RST}", end="\r")
 
-    is_new = grant_achievement(claimer_id, "first_nft")
+            # Случайные действия для натуральности
+            if cycle % 5 == 0:
+                rc = random.choice(clients)
+                try:
+                    dialogs = await rc[0].get_dialogs(limit=3)
+                    if dialogs:
+                        d = random.choice(dialogs)
+                        await rc[0].get_messages(d.entity, limit=3)
+                except Exception:
+                    pass
 
-    await send_notification(sender_id,
-        f"{pe('send')} <b>Ваш NFT получен!</b>\n\n"
-        f"{nft['gift_emoji']} <b>{nft['gift_name']}</b> | NFT #{nft_id}\n"
-        f"{pe('profile')} Получил: {claimer_name} (<code>{claimer_id}</code>)\n"
-        f"{pe('money')} Комиссия: {fee} {pe('star')}"
-    )
+            await asyncio.sleep(interval + random.uniform(-5, 5))
 
-    if is_new:
-        await send_notification(claimer_id,
-            f"{pe('achieve')} {pe('medal')} <b>Достижение разблокировано: Первый NFT!</b>"
-        )
+    except KeyboardInterrupt:
+        print(f"\n{C.Y}⏹ Остановка...{C.RST}")
+    finally:
+        for client, name in clients:
+            try:
+                await client(UpdateStatusRequest(offline=True))
+                await client.disconnect()
+            except Exception:
+                pass
+        print(f"\n{C.G}✅ Все аккаунты переведены в оффлайн{C.RST}")
 
+# ─────────────────────────────────────────────────────────────
+# 38. ЧЕКЕР АККАУНТОВ
+# ─────────────────────────────────────────────────────────────
 
-# ============================================================
-# ФОНОВЫЕ ЗАДАЧИ
-# ============================================================
+async def action_checker():
+    sessions = get_sessions()
+    if not sessions:
+        print(f"{C.R}❌ Нет сессий{C.RST}")
+        return
 
-async def check_limited_gifts():
-    conn = get_db()
-    c = conn.cursor()
-    now = datetime.now().isoformat()
-    c.execute("UPDATE limited_gifts SET is_active = 0 WHERE is_active = 1 AND expires_at <= ?", (now,))
-    conn.commit()
-    conn.close()
+    proxies = load_proxies()
+    alive = []
+    dead = []
+    banned = []
 
+    print(f"\n{C.CY}{'═'*50}")
+    print(f"  ✅ Чекер аккаунтов ({len(sessions)} сессий)")
+    print(f"{'═'*50}{C.RST}\n")
 
-async def check_stardom_expiry():
-    conn = get_db()
-    c = conn.cursor()
-    now = datetime.now().isoformat()
-    c.execute(
-        "SELECT user_id FROM users WHERE stardom_level > 0 AND stardom_expires != '' AND stardom_expires <= ?",
-        (now,)
-    )
-    expired_users = [dict(row) for row in c.fetchall()]
+    for i, session_name in enumerate(sessions):
+        proxy = proxies[i % len(proxies)] if proxies else None
+        client = await create_client(session_name, proxy)
 
-    for u in expired_users:
-        c.execute(
-            "UPDATE users SET stardom_level = 0, stardom_expires = '' WHERE user_id = ?",
-            (u["user_id"],)
-        )
-        await send_notification(u["user_id"],
-            f"{pe('stardom')} <b>Ваша подписка Stardom истекла!</b>\n\n"
-            f"{pe('sparkles')} Продлите подписку в разделе Stardom."
-        )
-
-    conn.commit()
-    conn.close()
-
-
-async def check_bans_expiry():
-    conn = get_db()
-    c = conn.cursor()
-    now = datetime.now().isoformat()
-    c.execute(
-        "SELECT user_id FROM users WHERE is_banned = 1 AND ban_until != 'permanent' "
-        "AND ban_until != '' AND ban_until <= ?",
-        (now,)
-    )
-    expired = [dict(row) for row in c.fetchall()]
-
-    for u in expired:
-        c.execute(
-            "UPDATE users SET is_banned = 0, ban_reason = '', ban_until = '' WHERE user_id = ?",
-            (u["user_id"],)
-        )
-        await send_notification(u["user_id"],
-            f"{pe('check')} <b>Ваш бан истёк!</b>\n\n"
-            f"{pe('success')} Добро пожаловать обратно!"
-        )
-
-    conn.commit()
-    conn.close()
-
-
-async def cleanup_inline_transfers():
-    conn = get_db()
-    c = conn.cursor()
-    cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
-    c.execute("DELETE FROM inline_transfers WHERE is_claimed = 0 AND created_at <= ?", (cutoff,))
-    conn.commit()
-    conn.close()
-
-
-async def background_tasks():
-    while True:
         try:
-            await check_auctions()
-            await check_rentals()
-            await check_limited_gifts()
-            await check_stardom_expiry()
-            await check_bans_expiry()
-            await cleanup_inline_transfers()
+            await client.connect()
+            if await client.is_user_authorized():
+                me = await client.get_me()
+                phone = me.phone or "?"
+                name = f"{me.first_name or ''} {me.last_name or ''}".strip()
+                username = f"@{me.username}" if me.username else ""
+                print(f"  {C.G}✅ {session_name}: +{phone} {name} {username}{C.RST}")
+                alive.append(session_name)
+            else:
+                print(f"  {C.Y}⚠️ {session_name}: не авторизован{C.RST}")
+                dead.append(session_name)
+        except (PhoneNumberBannedError, UserDeactivatedBanError, UserDeactivatedError):
+            print(f"  {C.R}💀 {session_name}: ЗАБАНЕН{C.RST}")
+            banned.append(session_name)
+        except AuthKeyUnregisteredError:
+            print(f"  {C.R}🔑 {session_name}: сессия невалидна{C.RST}")
+            dead.append(session_name)
         except Exception as e:
-            logger.error(f"Ошибка в фоновых задачах: {e}")
+            print(f"  {C.R}❌ {session_name}: {e}{C.RST}")
+            dead.append(session_name)
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
 
-        await asyncio.sleep(60)
+    print(f"\n{C.CY}{'═'*50}")
+    print(f"  📊 Результат:")
+    print(f"    {C.G}✅ Живые:     {len(alive)}{C.RST}")
+    print(f"    {C.R}💀 Баны:      {len(banned)}{C.RST}")
+    print(f"    {C.Y}⚠️ Мёртвые:   {len(dead)}{C.RST}")
+    print(f"{C.CY}{'═'*50}{C.RST}")
 
+    if banned or dead:
+        move = ask("Переместить мёртвые/баны в dead_sessions/? (y/n): ", "n")
+        if move == "y":
+            dead_dir = BASE_DIR / "dead_sessions"
+            dead_dir.mkdir(exist_ok=True)
+            for s in banned + dead:
+                src = SESSIONS_DIR / f"{s}.session"
+                dst = dead_dir / f"{s}.session"
+                if src.exists():
+                    src.rename(dst)
+                    print(f"  {C.DIM}  ↳ {s} → dead_sessions/{C.RST}")
 
-# ============================================================
-# КНОПКА УЛУЧШЕНИЯ ИЗ ИНВЕНТАРЯ
-# ============================================================
+# ─────────────────────────────────────────────────────────────
+# 39. АКТИВНЫЕ СЕССИИ
+# ─────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data.startswith("inv_upgrade_"))
-async def inv_upgrade_to_nft(callback: CallbackQuery):
-    inv_id = int(callback.data.split("_")[2])
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM inventory WHERE inv_id = ? AND user_id = ?", (inv_id, callback.from_user.id))
-    item = c.fetchone()
-    conn.close()
-
-    if not item:
-        await callback.answer(f"{pe_plain('cross')} Подарок не найден!", show_alert=True)
+async def action_active_sessions():
+    sessions = select_sessions("Выбери аккаунты")
+    if not sessions:
         return
 
-    item = dict(item)
+    proxies = load_proxies()
 
-    if item["rarity"] != "rare":
-        await callback.answer(f"{pe_plain('cross')} Только редкие подарки!", show_alert=True)
+    for i, session_name in enumerate(sessions):
+        proxy = proxies[i % len(proxies)] if proxies else None
+        client = await create_client(session_name, proxy)
+        if not await safe_connect(client, session_name):
+            continue
+
+        try:
+            result = await client(GetAuthorizationsRequest())
+            print(f"\n{C.CY}  📱 Сессии для {session_name}:{C.RST}")
+            for j, auth in enumerate(result.authorizations):
+                current = " 👈 ТЕКУЩАЯ" if auth.current else ""
+                print(f"    {j+1}. {auth.device_model} | {auth.platform} | "
+                      f"{auth.app_name} v{auth.app_version}")
+                print(f"       IP: {auth.ip} | Регион: {auth.country}")
+                print(f"       Создана: {auth.date_created} | "
+                      f"Активна: {auth.date_active}{C.G}{current}{C.RST}")
+                print(f"       Hash: {auth.hash}")
+                print()
+        finally:
+            await client.disconnect()
+
+# ─────────────────────────────────────────────────────────────
+# 40. СБРОС ВСЕХ СЕССИЙ
+# ─────────────────────────────────────────────────────────────
+
+async def task_reset_all_sessions(client, session_name, **kw):
+    result = await client(GetAuthorizationsRequest())
+    count = 0
+    for auth in result.authorizations:
+        if not auth.current:
+            try:
+                await client(ResetAuthorizationRequest(hash=auth.hash))
+                count += 1
+                await human_delay(0.3, 0.8)
+            except Exception:
+                pass
+    print(f"  {C.DIM}  ↳ {session_name}: сброшено {count} сессий{C.RST}")
+
+async def action_reset_all_sessions():
+    confirm = ask("⚠️ Сбросить ВСЕ сессии (кроме текущей)? (yes/no): ")
+    if confirm.lower() != "yes":
         return
-
-    if item["is_nft"]:
-        await callback.answer(f"{pe_plain('cross')} Уже NFT!", show_alert=True)
+    sessions = select_sessions()
+    if not sessions:
         return
-
-    fee = get_nft_create_fee(callback.from_user.id)
-
-    kb = InlineKeyboardBuilder()
-    kb.row(make_inline_button(f"Улучшить за {fee}{pe_plain('star')}", f"upgrade_to_nft_{inv_id}", "upgrade"))
-    kb.row(make_inline_button("Отмена", "inventory_0", "back"))
-
-    await callback.message.edit_text(
-        f"{pe('upgrade')} <b>Улучшение до NFT</b>\n\n"
-        f"{item['gift_emoji']} <b>{item['gift_name']}</b>\n"
-        f"{pe('money')} Комиссия: <b>{fee} {pe('star')}</b>\n"
-        f"{pe('money')} Баланс: <b>{get_stars(callback.from_user.id)} {pe('star')}</b>\n\n"
-        f"{pe('warning')} Характеристики будут случайными!",
-        reply_markup=kb.as_markup()
+    await execute_on_sessions(
+        sessions, task_reset_all_sessions,
+        task_name="💀 Сброс всех сессий"
     )
 
+# ─────────────────────────────────────────────────────────────
+# 41. ВЫБОРОЧНЫЙ СБРОС
+# ─────────────────────────────────────────────────────────────
 
-# ============================================================
-# ОБРАБОТКА НЕИЗВЕСТНЫХ СООБЩЕНИЙ
-# ============================================================
-
-@router.message(F.text)
-async def unknown_message(message: Message):
-    if message.text.startswith("/"):
-        await message.answer(
-            f"{pe('cross')} Неизвестная команда!\n"
-            f"Используйте /help для списка команд."
-        )
+async def action_selective_reset():
+    sessions = select_sessions("Выбери аккаунт")
+    if not sessions:
         return
 
-    text = message.text.strip()
-    known_buttons = [
-        "Профиль", "Маркет", "Маркет #2", "Торговля",
-        "Крафт", "Stardom", "Промокоды", "Топ", "Друзья"
-    ]
+    proxies = load_proxies()
+    proxy = proxies[0] if proxies else None
+    client = await create_client(sessions[0], proxy)
+    if not await safe_connect(client, sessions[0]):
+        return
 
-    for btn in known_buttons:
-        if btn in text:
+    try:
+        result = await client(GetAuthorizationsRequest())
+        auths = []
+        print(f"\n{C.CY}  Сессии:{C.RST}")
+        for j, auth in enumerate(result.authorizations):
+            if auth.current:
+                print(f"  {C.G}{j+1}. [ТЕКУЩАЯ] {auth.device_model} | {auth.app_name}{C.RST}")
+            else:
+                print(f"  {C.W}{j+1}. {auth.device_model} | {auth.app_name} | "
+                      f"IP: {auth.ip} | {auth.date_active}{C.RST}")
+            auths.append(auth)
+
+        indices = ask("Номера для сброса (через запятую): ")
+        if not indices:
             return
 
+        for idx_str in indices.split(","):
+            try:
+                idx = int(idx_str.strip()) - 1
+                if 0 <= idx < len(auths) and not auths[idx].current:
+                    await client(ResetAuthorizationRequest(hash=auths[idx].hash))
+                    print(f"  {C.G}✅ Сессия {idx+1} сброшена{C.RST}")
+                elif auths[idx].current:
+                    print(f"  {C.Y}⚠️ Нельзя сбросить текущую сессию{C.RST}")
+            except Exception as e:
+                print(f"  {C.R}❌ {e}{C.RST}")
 
-# ============================================================
-# ЗАПУСК БОТА
-# ============================================================
+    finally:
+        await client.disconnect()
 
-async def on_startup():
-    logger.info(f"{pe_plain('star')} Бот запускается...")
-    me = await bot.get_me()
-    logger.info(f"{pe_plain('check')} Бот @{me.username} ({me.id}) запущен!")
+# ─────────────────────────────────────────────────────────────
+# 42. ЗАПРОС КОДА + 2FA (создание новой сессии)
+# ─────────────────────────────────────────────────────────────
 
+async def action_new_session():
+    api_id, api_hash = get_api_credentials()
+    phone = ask("Номер телефона (+79...): ")
+    if not phone:
+        return
+
+    session_name = phone.replace("+", "").replace(" ", "")
+    proxy_str_val = ask("Прокси (пусто = без прокси): ")
+    proxy = parse_proxy(proxy_str_val) if proxy_str_val else None
+
+    client = await create_client(session_name, proxy)
+    await client.connect()
+
+    try:
+        result = await client.send_code_request(phone)
+        print(f"{C.G}✅ Код отправлен{C.RST}")
+        code = ask("Введи код из Telegram: ")
+
+        try:
+            await client.sign_in(phone, code)
+        except SessionPasswordNeededError:
+            print(f"{C.Y}🔐 Требуется 2FA пароль{C.RST}")
+            password = ask("2FA пароль: ")
+            await client.sign_in(password=password)
+
+        me = await client.get_me()
+        print(f"{C.G}✅ Авторизован: {me.first_name} (@{me.username or '?'}) +{me.phone}{C.RST}")
+
+        # Перемещаем сессию в sessions/
+        src = Path(f"{session_name}.session")
+        dst = SESSIONS_DIR / f"{session_name}.session"
+        if src.exists() and not dst.exists():
+            src.rename(dst)
+
+    except Exception as e:
+        print(f"{C.R}❌ Ошибка: {e}{C.RST}")
+    finally:
+        await client.disconnect()
+
+# ─────────────────────────────────────────────────────────────
+# 43. ИНФО ОБ АККАУНТАХ
+# ─────────────────────────────────────────────────────────────
+
+async def task_get_info(client, session_name, **kw):
+    me = await client.get_me()
+    full = await client(GetFullUserRequest(me))
+
+    print(f"\n{C.CY}  ── {session_name} ──{C.RST}")
+    print(f"    ID:        {me.id}")
+    print(f"    Телефон:   +{me.phone or '?'}")
+    print(f"    Имя:       {me.first_name or ''} {me.last_name or ''}")
+    print(f"    Username:  @{me.username or 'нет'}")
+    print(f"    Бот:       {'Да' if me.bot else 'Нет'}")
+    print(f"    Premium:   {'Да' if me.premium else 'Нет'}")
+    print(f"    Био:       {full.full_user.about or 'нет'}")
+    print(f"    Фото:      {'Есть' if me.photo else 'Нет'}")
+
+    # Кол-во диалогов
+    dialogs = await client.get_dialogs(limit=0)
+    print(f"    Диалогов:  {dialogs.total if hasattr(dialogs, 'total') else '?'}")
+
+async def action_get_info():
+    sessions = select_sessions("Выбери аккаунты")
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_get_info,
+        task_name="ℹ️ Информация об аккаунтах",
+        max_concurrent=3
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 44. ИМЯ/БИО
+# ─────────────────────────────────────────────────────────────
+
+async def task_update_profile(client, session_name, **kw):
+    first_name = kw.get("first_name")
+    last_name = kw.get("last_name")
+    about = kw.get("about")
+
+    kwargs = {}
+    if first_name is not None:
+        kwargs["first_name"] = first_name
+    if last_name is not None:
+        kwargs["last_name"] = last_name
+    if about is not None:
+        kwargs["about"] = about
+
+    if kwargs:
+        await client(UpdateProfileRequest(**kwargs))
+
+async def action_update_profile():
+    first = ask("Имя (пусто = не менять): ")
+    last = ask("Фамилия (пусто = не менять): ")
+    about = ask("Био (пусто = не менять): ")
+
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_update_profile,
+        task_name="✏️ Обновление профиля",
+        first_name=first if first else None,
+        last_name=last if last else None,
+        about=about if about else None
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 45. ФОТО ПРОФИЛЯ
+# ─────────────────────────────────────────────────────────────
+
+async def task_set_photo(client, session_name, **kw):
+    photo_path = kw["photo_path"]
+    delete_old = kw.get("delete_old", False)
+
+    if delete_old:
+        photos = await client.get_profile_photos("me")
+        if photos:
+            await client(DeletePhotosRequest(id=[
+                types.InputPhoto(
+                    id=p.id,
+                    access_hash=p.access_hash,
+                    file_reference=p.file_reference
+                ) for p in photos
+            ]))
+
+    if photo_path and os.path.exists(photo_path):
+        file = await client.upload_file(photo_path)
+        await client(UploadProfilePhotoRequest(file=file))
+
+async def action_set_photo():
+    photo_path = ask("Путь к фото: ")
+    if not photo_path or not os.path.exists(photo_path):
+        print(f"{C.R}❌ Файл не найден{C.RST}")
+        return
+    delete_old = ask("Удалить старые фото? (y/n): ", "n") == "y"
+
+    sessions = select_sessions()
+    if not sessions:
+        return
+    await execute_on_sessions(
+        sessions, task_set_photo,
+        task_name="🖼 Установка фото",
+        photo_path=photo_path,
+        delete_old=delete_old
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 46. 2FA (установка/смена пароля)
+# ─────────────────────────────────────────────────────────────
+
+async def action_set_2fa():
+    sessions = select_sessions("Выбери аккаунт")
+    if not sessions:
+        return
+
+    proxies = load_proxies()
+
+    for i, session_name in enumerate(sessions):
+        proxy = proxies[i % len(proxies)] if proxies else None
+        client = await create_client(session_name, proxy)
+        if not await safe_connect(client, session_name):
+            continue
+
+        try:
+            # Проверяем текущий статус 2FA
+            pwd = await client(GetPasswordRequest())
+            has_2fa = pwd.has_password
+
+            if has_2fa:
+                print(f"  {C.Y}🔐 {session_name}: 2FA уже установлен{C.RST}")
+                print(f"  1. Сменить пароль  2. Удалить 2FA  3. Пропустить")
+                ch = ask_int("Выбор: ", 3)
+
+                if ch == 1:
+                    old_pwd = ask("Текущий пароль: ")
+                    new_pwd = ask("Новый пароль: ")
+                    hint = ask("Подсказка: ", "")
+                    try:
+                        await client.edit_2fa(
+                            current_password=old_pwd,
+                            new_password=new_pwd,
+                            hint=hint
+                        )
+                        print(f"  {C.G}✅ Пароль изменён{C.RST}")
+                    except Exception as e:
+                        print(f"  {C.R}❌ {e}{C.RST}")
+                elif ch == 2:
+                    old_pwd = ask("Текущий пароль: ")
+                    try:
+                        await client.edit_2fa(
+                            current_password=old_pwd,
+                            new_password=None
+                        )
+                        print(f"  {C.G}✅ 2FA удалён{C.RST}")
+                    except Exception as e:
+                        print(f"  {C.R}❌ {e}{C.RST}")
+            else:
+                print(f"  {C.Y}🔓 {session_name}: 2FA не установлен{C.RST}")
+                new_pwd = ask("Установить пароль (пусто = пропустить): ")
+                if new_pwd:
+                    hint = ask("Подсказка: ", "")
+                    email = ask("Email для восстановления (пусто = без): ")
+                    try:
+                        await client.edit_2fa(
+                            new_password=new_pwd,
+                            hint=hint,
+                            email=email if email else None
+                        )
+                        print(f"  {C.G}✅ 2FA установлен{C.RST}")
+                    except Exception as e:
+                        print(f"  {C.R}❌ {e}{C.RST}")
+
+        finally:
+            await client.disconnect()
+
+# ─────────────────────────────────────────────────────────────
+# 47. ОТПИСКА ОТ КАНАЛОВ
+# ─────────────────────────────────────────────────────────────
+
+async def task_unsubscribe_all(client, session_name, **kw):
+    leave_groups = kw.get("leave_groups", False)
+    whitelist = kw.get("whitelist", [])
+
+    count = 0
+    async for dialog in client.iter_dialogs():
+        entity = dialog.entity
+        if isinstance(entity, Channel):
+            # Пропускаем whitelist
+            if entity.username and entity.username.lower() in [w.lower().lstrip("@") for w in whitelist]:
+                continue
+            if str(entity.id) in whitelist:
+                continue
+
+            if entity.broadcast:  # Канал
+                try:
+                    await client(LeaveChannelRequest(entity))
+                    count += 1
+                    await human_delay(0.5, 1.5)
+                except Exception:
+                    pass
+            elif entity.megagroup and leave_groups:  # Группа
+                try:
+                    await client(LeaveChannelRequest(entity))
+                    count += 1
+                    await human_delay(0.5, 1.5)
+                except Exception:
+                    pass
+
+    print(f"  {C.DIM}  ↳ {session_name}: отписано от {count}{C.RST}")
+
+async def action_unsubscribe():
+    print(f"\n{C.Y}  Режим:{C.RST}")
+    print(f"  1. Только каналы")
+    print(f"  2. Каналы + группы")
+    mode = ask_int("Выбор: ", 1)
+
+    print(f"{C.Y}  Whitelist (не отписываться):{C.RST}")
+    print(f"  Введи @username каналов, пустая = конец")
+    whitelist = []
+    while True:
+        w = ask("@")
+        if not w:
+            break
+        whitelist.append(w)
+
+    sessions = select_sessions()
+    if not sessions:
+        return
+
+    confirm = ask(f"⚠️ Отписаться от {'каналов+групп' if mode==2 else 'каналов'}? (yes/no): ")
+    if confirm.lower() != "yes":
+        return
+
+    await execute_on_sessions(
+        sessions, task_unsubscribe_all,
+        task_name="🚪 Отписка от каналов",
+        leave_groups=(mode == 2),
+        whitelist=whitelist
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 48. УДАЛИТЬ АККАУНТ
+# ─────────────────────────────────────────────────────────────
+
+async def task_delete_account(client, session_name, **kw):
+    reason = kw.get("reason", "I want to delete my account")
+    await client(DeleteAccountRequest(reason=reason))
+
+async def action_delete_account():
+    print(f"\n{C.R}{'═'*50}")
+    print(f"  ☠️  ВНИМАНИЕ! УДАЛЕНИЕ АККАУНТА НЕОБРАТИМО!")
+    print(f"{'═'*50}{C.RST}")
+
+    confirm1 = ask("Ты уверен? (yes/no): ")
+    if confirm1.lower() != "yes":
+        return
+    confirm2 = ask("Точно уверен? Напиши DELETE: ")
+    if confirm2 != "DELETE":
+        return
+
+    reason = ask("Причина удаления: ", "I want to delete my account")
+    sessions = select_sessions()
+    if not sessions:
+        return
+
+    await execute_on_sessions(
+        sessions, task_delete_account,
+        task_name="☠️ УДАЛЕНИЕ АККАУНТОВ",
+        reason=reason
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 49. СПИСОК СЕССИЙ
+# ─────────────────────────────────────────────────────────────
+
+async def action_list_sessions():
+    sessions = list_sessions()
+    if not sessions:
+        return
+    print(f"\n  Всего: {len(sessions)} сессий")
+    print(f"  Папка: {SESSIONS_DIR}")
+
+# ─────────────────────────────────────────────────────────────
+# 50. СПИСОК ПРОКСИ
+# ─────────────────────────────────────────────────────────────
+
+async def action_list_proxies():
+    proxies = load_proxies()
+    if not proxies:
+        print(f"\n{C.Y}  Прокси не найдены{C.RST}")
+        print(f"  Создай файл {C.W}proxies.txt{C.RST} с прокси по одному на строку:")
+        print(f"  {C.DIM}socks5://user:pass@ip:port")
+        print(f"  socks5://ip:port")
+        print(f"  http://ip:port{C.RST}")
+        return
+
+    print(f"\n{C.CY}{'─'*50}")
+    print(f"  🌐 Прокси: {len(proxies)}")
+    print(f"{'─'*50}{C.RST}")
+    for i, p in enumerate(proxies, 1):
+        print(f"  {C.W}{i:3}. {C.G}{proxy_str(p)}{C.RST}")
+    print(f"{C.CY}{'─'*50}{C.RST}")
+
+    # Тест прокси
+    test = ask("Протестировать? (y/n): ", "n")
+    if test == "y":
+        print(f"\n{C.CY}  Тестирование...{C.RST}")
+        api_id, api_hash = get_api_credentials()
+
+        for i, p in enumerate(proxies):
+            try:
+                import socks
+                import socket
+
+                ptype_map = {
+                    "socks5": socks.SOCKS5,
+                    "socks4": socks.SOCKS4,
+                    "http": socks.HTTP,
+                    "https": socks.HTTP,
+                }
+
+                s = socks.socksocket()
+                s.set_proxy(
+                    ptype_map.get(p["proxy_type"], socks.SOCKS5),
+                    p["addr"], p["port"],
+                    username=p.get("username"),
+                    password=p.get("password")
+                )
+                s.settimeout(10)
+
+                start_t = time.time()
+                s.connect(("149.154.167.50", 443))  # Telegram DC
+                latency = int((time.time() - start_t) * 1000)
+                s.close()
+
+                print(f"  {C.G}✅ {proxy_str(p)} — {latency}ms{C.RST}")
+            except Exception as e:
+                print(f"  {C.R}❌ {proxy_str(p)} — {e}{C.RST}")
+
+# ═══════════════════════════════════════════════════════════════
+# ГЛАВНЫЙ ЦИКЛ
+# ═══════════════════════════════════════════════════════════════
+
+ACTION_MAP = {
+    1:  action_view_post,
+    2:  action_send_reaction,
+    3:  action_subscribe,
+    4:  action_all_in_one,
+    5:  action_comment,
+    6:  action_forward,
+    7:  action_vote,
+    8:  action_click_button,
+    9:  action_mass_reaction,
+    10: action_start_bot,
+    11: action_bot_scenario,
+    12: action_webapp,
+    13: action_send_dm,
+    14: action_invite,
+    15: action_send_message,
+    16: action_scheduled_send,
+    17: action_edit_message,
+    18: action_pin_unpin,
+    19: action_delete_own,
+    20: action_create_channel,
+    21: action_setup_channel,
+    22: action_promote_admin,
+    23: action_ban_kick,
+    24: action_clear_channel,
+    25: action_copy_channel,
+    26: action_report_channel,
+    27: action_report_message,
+    28: action_block_users,
+    29: action_parse_members,
+    30: action_channel_stats,
+    31: action_download_media,
+    32: action_monitor,
+    33: action_auto_responder,
+    34: action_auto_posting,
+    35: action_tasks_from_json,
+    36: action_warmup,
+    37: action_online_imitation,
+    38: action_checker,
+    39: action_active_sessions,
+    40: action_reset_all_sessions,
+    41: action_selective_reset,
+    42: action_new_session,
+    43: action_get_info,
+    44: action_update_profile,
+    45: action_set_photo,
+    46: action_set_2fa,
+    47: action_unsubscribe,
+    48: action_delete_account,
+    49: action_list_sessions,
+    50: action_list_proxies,
+}
 
 async def main():
-    init_db()
-    asyncio.create_task(background_tasks())
-    await on_startup()
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    # Проверяем API credentials при первом запуске
+    get_api_credentials()
 
+    while True:
+        print_menu()
+        try:
+            choice_str = input(f"\n{C.CY}  ▶ Выбери пункт: {C.RST}").strip()
+            if not choice_str:
+                continue
+            choice = int(choice_str)
+        except (ValueError, EOFError):
+            continue
+        except KeyboardInterrupt:
+            print(f"\n{C.Y}👋 Выход{C.RST}")
+            break
+
+        if choice == 0:
+            print(f"\n{C.Y}👋 До встречи!{C.RST}")
+            break
+
+        action = ACTION_MAP.get(choice)
+        if not action:
+            print(f"{C.R}❌ Неверный пункт{C.RST}")
+            pause()
+            continue
+
+        try:
+            # Некоторые функции уже async, вызываем
+            result = action()
+            if asyncio.iscoroutine(result):
+                await result
+        except KeyboardInterrupt:
+            print(f"\n{C.Y}⏹ Прервано{C.RST}")
+        except Exception as e:
+            print(f"\n{C.R}❌ Ошибка: {e}{C.RST}")
+            import traceback
+            traceback.print_exc()
+
+        pause()
+
+# ═══════════════════════════════════════════════════════════════
+# ТОЧКА ВХОДА
+# ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     try:
+        # Для Windows
+        if os.name == 'nt':
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info(f"{pe_plain('cross')} Бот остановлен.")
+        print(f"\n{C.Y}👋 Выход{C.RST}")
     except Exception as e:
-        logger.error(f"{pe_plain('cross')} Критическая ошибка: {e}")
+        print(f"\n{C.R}Критическая ошибка: {e}{C.RST}")
+        import traceback
+        traceback.print_exc()
 
-
-# ============================================================
-# КОНЕЦ БОТА — ВСЕ 7 ЧАСТЕЙ
-# ============================================================
+# ═══════════════════════════════════════════════════════════════
+# КОНЕЦ ФАЙЛА tg_tool.py
+# ═══════════════════════════════════════════════════════════════
